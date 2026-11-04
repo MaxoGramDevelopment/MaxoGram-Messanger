@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for direct Cloud Firestore username and password authentication in MaxoGram, bypassing Firebase Auth provider restrictions.",
+  "updatedAt":  "2026-10-25T12:23:32.934895560Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

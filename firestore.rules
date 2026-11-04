@@ -1,0 +1,137 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global catch-all default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidUserProfile(data) {
+      return data.userId is string && isValidId(data.userId) &&
+             data.username is string && data.username.size() >= 3 && data.username.size() <= 30 &&
+             data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 50 &&
+             (!('passwordHash' in data) || (data.passwordHash is string && data.passwordHash.size() == 64)) &&
+             (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 1000)) &&
+             (!('avatarType' in data) || (data.avatarType is string && data.avatarType.size() <= 50)) &&
+             (!('avatarValue' in data) || (data.avatarValue is string && data.avatarValue.size() <= 600000)) &&
+             (!('avatarColorHex' in data) || (data.avatarColorHex is int)) &&
+             (!('status' in data) || (data.status is string && data.status.size() <= 100)) &&
+             (!('lastSeen' in data) || (data.lastSeen is timestamp && data.lastSeen <= request.time)) &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidChat(data) {
+      return data.chatId is string && isValidId(data.chatId) &&
+             data.memberIds is list && data.memberIds.size() >= 2 && data.memberIds.size() <= 100 &&
+             (!('isGroup' in data) || data.isGroup is bool) &&
+             (!('groupName' in data) || (data.groupName is string && data.groupName.size() <= 100)) &&
+             (!('creatorId' in data) || (data.creatorId is string && isValidId(data.creatorId))) &&
+             (!('lastMessage' in data) || (data.lastMessage is string && data.lastMessage.size() <= 2000)) &&
+             (!('lastMessageSenderId' in data) || (data.lastMessageSenderId is string && isValidId(data.lastMessageSenderId))) &&
+             (!('lastMessageTimestamp' in data) || (data.lastMessageTimestamp is timestamp && data.lastMessageTimestamp <= request.time)) &&
+             (!('memberNames' in data) || data.memberNames is map) &&
+             (!('memberAvatarTypes' in data) || data.memberAvatarTypes is map) &&
+             (!('memberAvatarValues' in data) || data.memberAvatarValues is map) &&
+             (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt <= request.time));
+    }
+
+    function isValidMessage(data) {
+      return data.messageId is string && isValidId(data.messageId) &&
+             data.chatId is string && isValidId(data.chatId) &&
+             data.senderId is string && isValidId(data.senderId) &&
+             data.senderName is string && data.senderName.size() >= 1 && data.senderName.size() <= 50 &&
+             data.text is string && data.text.size() <= 2000 &&
+             data.memberIds is list && data.memberIds.size() >= 2 && data.memberIds.size() <= 100 &&
+             (!('mediaType' in data) || (data.mediaType is string && data.mediaType.size() <= 20)) &&
+             (!('mediaUrl' in data) || (data.mediaUrl is string && data.mediaUrl.size() <= 800000)) &&
+             (!('mediaThumbnail' in data) || (data.mediaThumbnail is string && data.mediaThumbnail.size() <= 150000)) &&
+             (!('mediaName' in data) || (data.mediaName is string && data.mediaName.size() <= 200)) &&
+             (!('mediaSize' in data) || (data.mediaSize is int)) &&
+             (!('mediaDuration' in data) || (data.mediaDuration is int)) &&
+             (!('totalChunks' in data) || (data.totalChunks is int)) &&
+             (!('expiresAtMillis' in data) || (data.expiresAtMillis is int)) &&
+             (!('isPurgedFromServer' in data) || (data.isPurgedFromServer is bool));
+    }
+
+    match /users/{userId} {
+      allow get, list: if true;
+
+      allow create: if isValidId(userId) &&
+                       incoming().userId == userId &&
+                       incoming().keys().hasAll(['userId', 'username', 'displayName']) &&
+                       incoming().keys().hasOnly(['userId', 'username', 'displayName', 'passwordHash', 'avatarUrl', 'avatarType', 'avatarValue', 'avatarColorHex', 'status', 'lastSeen', 'createdAt', 'updatedAt']) &&
+                       (!('createdAt' in incoming()) || (incoming().createdAt is timestamp && incoming().createdAt <= request.time)) &&
+                       isValidUserProfile(incoming());
+
+      allow update: if isValidId(userId) &&
+                       incoming().userId == existing().userId &&
+                       (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) &&
+                       isValidUserProfile(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['username', 'displayName', 'passwordHash', 'avatarUrl', 'avatarType', 'avatarValue', 'avatarColorHex', 'status', 'lastSeen', 'updatedAt']);
+
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
+
+    match /chats/{chatId} {
+      allow get, list: if true;
+
+      allow create: if isValidId(chatId) &&
+                       incoming().memberIds.size() >= 2 && incoming().memberIds.size() <= 100 &&
+                       incoming().chatId == chatId &&
+                       incoming().keys().hasAll(['chatId', 'memberIds']) &&
+                       incoming().keys().hasOnly(['chatId', 'memberIds', 'isGroup', 'groupName', 'creatorId', 'memberNames', 'memberAvatarTypes', 'memberAvatarValues', 'lastMessage', 'lastMessageSenderId', 'lastMessageTimestamp', 'createdAt', 'updatedAt']) &&
+                       (!('createdAt' in incoming()) || (incoming().createdAt is timestamp && incoming().createdAt <= request.time)) &&
+                       isValidChat(incoming());
+
+      allow update: if isValidId(chatId) &&
+                       incoming().chatId == existing().chatId &&
+                       (!('createdAt' in existing()) || incoming().createdAt == existing().createdAt) &&
+                       isValidChat(incoming()) &&
+                       incoming().diff(existing()).affectedKeys().hasOnly(['lastMessage', 'lastMessageSenderId', 'lastMessageTimestamp', 'memberNames', 'memberAvatarTypes', 'memberAvatarValues', 'memberIds', 'groupName', 'updatedAt']);
+
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow get, list: if true;
+
+        allow create: if isValidId(messageId) &&
+                         incoming().chatId == chatId &&
+                         incoming().messageId == messageId &&
+                         incoming().keys().hasAll(['messageId', 'chatId', 'senderId', 'senderName', 'text', 'memberIds']) &&
+                         incoming().keys().hasOnly(['messageId', 'chatId', 'senderId', 'senderName', 'text', 'memberIds', 'createdAt', 'mediaType', 'mediaUrl', 'mediaThumbnail', 'mediaName', 'mediaSize', 'mediaDuration', 'totalChunks', 'expiresAtMillis', 'isPurgedFromServer']) &&
+                         (!('createdAt' in incoming()) || (incoming().createdAt is timestamp && incoming().createdAt <= request.time)) &&
+                         isValidMessage(incoming());
+
+        allow update: if isValidId(messageId) &&
+                         incoming().chatId == existing().chatId &&
+                         incoming().messageId == existing().messageId &&
+                         isValidMessage(incoming()) &&
+                         incoming().diff(existing()).affectedKeys().hasOnly(['mediaUrl', 'isPurgedFromServer']);
+
+        allow delete: if true;
+
+        match /chunks/{chunkId} {
+          allow read, write: if true;
+          allow delete: if true;
+        }
+      }
+    }
+  }
+}

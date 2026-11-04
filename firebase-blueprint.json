@@ -1,0 +1,65 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Public user profile for chat discovery and contact search.",
+      "type": "object",
+      "properties": {
+        "userId": { "type": "string", "description": "The Firebase Auth UID matching the document ID" },
+        "username": { "type": "string", "description": "Unique username handle e.g. zolo" },
+        "displayName": { "type": "string", "description": "Display name e.g. Иван" },
+        "avatarUrl": { "type": "string", "description": "Optional avatar URL" },
+        "status": { "type": "string", "description": "User presence status" },
+        "lastSeen": { "type": "string", "format": "date-time", "description": "Last active timestamp" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Account creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Profile update timestamp" }
+      },
+      "required": ["userId", "username", "displayName", "createdAt"]
+    },
+    "Chat": {
+      "title": "Chat",
+      "description": "Conversation between two users.",
+      "type": "object",
+      "properties": {
+        "chatId": { "type": "string", "description": "Unique conversation ID" },
+        "memberIds": { "type": "array", "description": "Array of user IDs participating in the chat" },
+        "memberNames": { "type": "object", "description": "Map of user ID to display name" },
+        "lastMessage": { "type": "string", "description": "Snippet of latest message" },
+        "lastMessageSenderId": { "type": "string", "description": "Sender ID of latest message" },
+        "lastMessageTimestamp": { "type": "string", "format": "date-time", "description": "Timestamp of latest message" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Chat creation timestamp" },
+        "updatedAt": { "type": "string", "format": "date-time", "description": "Chat update timestamp" }
+      },
+      "required": ["chatId", "memberIds", "createdAt"]
+    },
+    "Message": {
+      "title": "Message",
+      "description": "Individual chat message.",
+      "type": "object",
+      "properties": {
+        "messageId": { "type": "string", "description": "Unique message ID" },
+        "chatId": { "type": "string", "description": "Parent chat ID" },
+        "senderId": { "type": "string", "description": "Author UID" },
+        "senderName": { "type": "string", "description": "Author display name" },
+        "text": { "type": "string", "description": "Message text content" },
+        "memberIds": { "type": "array", "description": "Denormalized array of chat participant UIDs for flat rule evaluation" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "Creation timestamp" }
+      },
+      "required": ["messageId", "chatId", "senderId", "senderName", "text", "memberIds", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "Collection of user profiles available for search."
+    },
+    "/chats/{chatId}": {
+      "schema": "Chat",
+      "description": "Conversations list for users."
+    },
+    "/chats/{chatId}/messages/{messageId}": {
+      "schema": "Message",
+      "description": "Messages inside each conversation."
+    }
+  }
+}

@@ -35,11 +35,37 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.delay
+import com.example.data.model.CallSession
+import com.example.data.model.CallState
+import com.example.data.model.VoiceParticipant
+import com.example.service.CallForegroundService
+import com.example.util.CallAudioManager
 
 class FirebaseChatService(
   private val context: Context,
   private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO)
 ) : ChatService {
+
+  override val callAudioManager = CallAudioManager(context)
+
+  private val _currentCall = MutableStateFlow<CallSession?>(null)
+  override val currentCall: StateFlow<CallSession?> = _currentCall.asStateFlow()
+
+  private val _activeVoiceChannelChatId = MutableStateFlow<String?>(null)
+  override val activeVoiceChannelChatId: StateFlow<String?> = _activeVoiceChannelChatId.asStateFlow()
+
+  private val voiceParticipantsMap = mutableMapOf<String, MutableStateFlow<List<VoiceParticipant>>>()
+  private val voiceListeners = mutableMapOf<String, ListenerRegistration>()
+  private val chatCallListeners = mutableMapOf<String, ListenerRegistration>()
+  private val audioStreamListeners = mutableMapOf<String, ListenerRegistration>()
+  private val audioBuffer = java.io.ByteArrayOutputStream()
+  private var lastAudioSendTime = 0L
+  private var audioToggle = 0
+  private var audioSeq = 0L
+  private val lastSeenDocSeq = mutableMapOf<String, Long>()
+  private var isVoiceMutedState = false
+  private var isVoiceDeafenedState = false
 
   private val auth: FirebaseAuth = Firebase.auth
   val db: FirebaseFirestore = FirebaseFirestore.getInstance(
@@ -91,6 +117,7 @@ class FirebaseChatService(
     val savedUsername = sessionPrefs.getString("session_username", null)
     val savedDisplayName = sessionPrefs.getString("session_display_name", null)
     val savedBio = sessionPrefs.getString("session_bio", "в сети MaxoGram") ?: "в сети MaxoGram"
+    val savedBirthDate = sessionPrefs.getString("session_birth_date", "") ?: ""
     val savedAvatarType = sessionPrefs.getString("session_avatar_type", "INITIALS") ?: "INITIALS"
     val savedAvatarValue = sessionPrefs.getString("session_avatar_value", "") ?: ""
 
@@ -103,7 +130,9 @@ class FirebaseChatService(
         displayName = savedDisplayName ?: savedUsername,
         avatarColorHex = if (savedAvatarColor != 0L) savedAvatarColor else getDeterministicColor(savedUsername),
         isOnline = true,
+        lastSeenMillis = System.currentTimeMillis(),
         bio = savedBio,
+        birthDate = savedBirthDate,
         avatarType = savedAvatarType,
         avatarValue = savedAvatarValue
       )
@@ -126,6 +155,63 @@ class FirebaseChatService(
         cleanupListeners()
       }
     }
+
+    scope.launch {
+      callAudioManager.isUserSpeaking.collect { speaking ->
+        val activeChat = _activeVoiceChannelChatId.value
+        val myUid = _currentUser.value?.id
+        if (activeChat != null && myUid != null && !isVoiceMutedState) {
+          try {
+            db.collection("chats")
+              .document(activeChat)
+              .collection("voice_participants")
+              .document(myUid)
+              .update("isSpeaking", speaking)
+          } catch (_: Exception) {}
+        }
+      }
+    }
+
+    callAudioManager.onAudioCaptured = { pcmBytes ->
+      val call = _currentCall.value
+      val activeVoice = _activeVoiceChannelChatId.value
+      val targetChatId = if (call != null && call.state == CallState.CONNECTED && !call.isMuted) {
+        call.chatId
+      } else if (activeVoice != null && !isVoiceMutedState) {
+        activeVoice
+      } else null
+
+      val myUid = _currentUser.value?.id
+      if (targetChatId != null && myUid != null) {
+        synchronized(audioBuffer) {
+          audioBuffer.write(pcmBytes)
+          val now = System.currentTimeMillis()
+          if (audioBuffer.size() >= 3520 || (now - lastAudioSendTime >= 220L && audioBuffer.size() >= 1280)) {
+            val chunk = audioBuffer.toByteArray()
+            audioBuffer.reset()
+            lastAudioSendTime = now
+            val b64 = Base64.encodeToString(chunk, Base64.NO_WRAP)
+            val docId = "${myUid}_$audioToggle"
+            audioToggle = (audioToggle + 1) % 4
+            audioSeq++
+            db.collection("chats").document(targetChatId)
+              .collection("audio_stream").document(docId)
+              .set(mapOf(
+                "senderId" to myUid,
+                "seq" to audioSeq,
+                "time" to now,
+                "data" to b64
+              ))
+          }
+        }
+      } else {
+        synchronized(audioBuffer) {
+          if (audioBuffer.size() > 0) {
+            audioBuffer.reset()
+          }
+        }
+      }
+    }
   }
 
   private fun saveSession(user: User) {
@@ -134,6 +220,7 @@ class FirebaseChatService(
       .putString("session_username", user.username)
       .putString("session_display_name", user.displayName)
       .putString("session_bio", user.bio)
+      .putString("session_birth_date", user.birthDate)
       .putLong("session_avatar_color", user.avatarColorHex)
       .putString("session_avatar_type", user.avatarType)
       .putString("session_avatar_value", user.avatarValue)
@@ -162,6 +249,13 @@ class FirebaseChatService(
     partnerUserFlows.clear()
     messageListeners.values.forEach { it.remove() }
     messageListeners.clear()
+    voiceListeners.values.forEach { it.remove() }
+    voiceListeners.clear()
+    chatCallListeners.values.forEach { it.remove() }
+    chatCallListeners.clear()
+    audioStreamListeners.values.forEach { it.remove() }
+    audioStreamListeners.clear()
+    callAudioManager.release()
   }
 
   private fun ensurePartnerListener(partnerId: String) {
@@ -183,8 +277,12 @@ class FirebaseChatService(
         val avatarValue = snapshot.getString("avatarValue") ?: ""
         val colorFromDb = snapshot.getLong("avatarColorHex")
         val avatarColor = if (colorFromDb != null && colorFromDb != 0L) colorFromDb else getDeterministicColor(username)
-        val status = snapshot.getString("status") ?: ""
-        val isOnline = snapshot.getBoolean("isOnline") ?: true
+        val status = snapshot.getString("bio") ?: snapshot.getString("status") ?: ""
+        val birthDate = snapshot.getString("birthDate") ?: ""
+        val isOnline = snapshot.getBoolean("isOnline") ?: false
+        val lastSeenMillis = snapshot.getLong("lastSeenMillis")
+          ?: snapshot.getTimestamp("lastSeen")?.toDate()?.time
+          ?: 0L
 
         val partnerUser = User(
           id = partnerId,
@@ -192,7 +290,9 @@ class FirebaseChatService(
           displayName = displayName,
           avatarColorHex = avatarColor,
           isOnline = isOnline,
+          lastSeenMillis = lastSeenMillis,
           bio = status,
+          birthDate = birthDate,
           avatarType = avatarType,
           avatarValue = avatarValue
         )
@@ -208,7 +308,8 @@ class FirebaseChatService(
               avatarColorHex = avatarColor,
               avatarType = avatarType,
               avatarValue = avatarValue,
-              isOnline = isOnline
+              isOnline = isOnline,
+              lastSeenMillis = lastSeenMillis
             )
           } else {
             dialog
@@ -231,7 +332,8 @@ class FirebaseChatService(
       if (snapshot != null && snapshot.exists()) {
         val username = snapshot.getString("username") ?: "user_${uid.take(5)}"
         val displayName = snapshot.getString("displayName") ?: initialDisplayName ?: "Пользователь"
-        val bio = snapshot.getString("status") ?: ""
+        val bio = snapshot.getString("bio") ?: snapshot.getString("status") ?: ""
+        val birthDate = snapshot.getString("birthDate") ?: ""
         val avatarType = snapshot.getString("avatarType") ?: "INITIALS"
         val avatarValue = snapshot.getString("avatarValue") ?: ""
         val colorFromDb = snapshot.getLong("avatarColorHex")
@@ -242,7 +344,9 @@ class FirebaseChatService(
           displayName = displayName,
           avatarColorHex = avatarColor,
           isOnline = true,
+          lastSeenMillis = System.currentTimeMillis(),
           bio = bio,
+          birthDate = birthDate,
           avatarType = avatarType,
           avatarValue = avatarValue
         )
@@ -262,7 +366,11 @@ class FirebaseChatService(
           "displayName" to displayName,
           "avatarType" to "INITIALS",
           "avatarValue" to "",
+          "bio" to "в сети MaxoGram",
           "status" to "в сети MaxoGram",
+          "birthDate" to "",
+          "isOnline" to true,
+          "lastSeenMillis" to System.currentTimeMillis(),
           "createdAt" to FieldValue.serverTimestamp(),
           "updatedAt" to FieldValue.serverTimestamp()
         )
@@ -270,6 +378,7 @@ class FirebaseChatService(
           handleFirestoreError(e, OperationType.CREATE, userDocRef.path)
         }
       }
+      setOnlinePresence(true)
     }
 
     // 2. Real-time observation of user chats
@@ -291,6 +400,8 @@ class FirebaseChatService(
           if (isGroup) {
             val groupName = doc.getString("groupName") ?: "Группа"
             val creatorId = doc.getString("creatorId") ?: ""
+            val blockedMemberIds = (doc.get("blockedMemberIds") as? List<*>)?.filterIsInstance<String>() ?: emptyList()
+            if (blockedMemberIds.contains(uid)) return@mapNotNull null
             val memberNames = mutableMapOf<String, String>()
             (doc.get("memberNames") as? Map<*, *>)?.forEach { (k, v) ->
               if (k is String && v is String) memberNames[k] = v
@@ -311,7 +422,8 @@ class FirebaseChatService(
               groupName = groupName,
               creatorId = creatorId,
               memberIds = memberIds,
-              memberNames = memberNames
+              memberNames = memberNames,
+              blockedMemberIds = blockedMemberIds
             )
           } else {
             val partnerId = memberIds.firstOrNull { it != uid } ?: uid
@@ -341,7 +453,8 @@ class FirebaseChatService(
               lastMessage = lastMsg,
               lastMessageTime = timeStr,
               unreadCount = 0,
-              isOnline = livePartner?.isOnline ?: true,
+              isOnline = livePartner?.isOnline ?: false,
+              lastSeenMillis = livePartner?.lastSeenMillis ?: 0L,
               avatarType = effectiveAvatarType,
               avatarValue = effectiveAvatarValue,
               isGroup = false,
@@ -350,8 +463,13 @@ class FirebaseChatService(
           }
         }.sortedByDescending { it.lastMessageTime }
 
-        val currentPending = _chats.value.filter { existing -> dialogs.none { it.id == existing.id } }
-        _chats.value = dialogs + currentPending
+        _chats.value = dialogs
+
+        dialogs.forEach { dialog ->
+          if (!dialog.isGroup) {
+            ensureCallListener(dialog.id, uid)
+          }
+        }
       }
     }
   }
@@ -445,6 +563,40 @@ class FirebaseChatService(
           val isUploading = _mediaUploadProgress.value.containsKey(doc.id) && uploadProg < 1f
           val isDownloading = _mediaDownloadProgress.value.containsKey(doc.id) && downloadProg < 1f
 
+          val docStatusStr = doc.getString("status") ?: "SENT"
+          val isRead = doc.getBoolean("isRead") ?: false
+          val readBy = (doc.get("readBy") as? List<*>)?.filterIsInstance<String>() ?: emptyList()
+          val deliveredTo = (doc.get("deliveredTo") as? List<*>)?.filterIsInstance<String>() ?: emptyList()
+
+          val isMessageRead = isRead || docStatusStr == "READ" ||
+            (recipientId.isNotBlank() && readBy.contains(recipientId)) ||
+            (readBy.any { it != senderId })
+
+          val isMessageDelivered = docStatusStr == "DELIVERED" ||
+            (recipientId.isNotBlank() && deliveredTo.contains(recipientId)) ||
+            (deliveredTo.any { it != senderId })
+
+          val messageStatus = when {
+            isMessageRead -> MessageStatus.READ
+            isMessageDelivered -> MessageStatus.DELIVERED
+            docStatusStr == "SENDING" -> MessageStatus.SENDING
+            else -> MessageStatus.SENT
+          }
+
+          // If incoming message is currently only SENT, mark as DELIVERED to sender
+          if (senderId != currentUid && docStatusStr == "SENT" && !isRead) {
+            scope.launch {
+              try {
+                doc.reference.update(
+                  mapOf(
+                    "status" to "DELIVERED",
+                    "deliveredTo" to FieldValue.arrayUnion(currentUid)
+                  )
+                )
+              } catch (_: Exception) {}
+            }
+          }
+
           Pair(
             sortTime,
             ChatMessage(
@@ -456,7 +608,7 @@ class FirebaseChatService(
               text = text,
               timestamp = timeStr,
               isOutgoing = (senderId == currentUid),
-              status = MessageStatus.READ,
+              status = messageStatus,
               mediaType = mediaType,
               mediaUrl = mediaUrl,
               mediaThumbnail = mediaThumbnail,
@@ -475,9 +627,9 @@ class FirebaseChatService(
           )
         }.sortedWith(compareBy({ it.first }, { it.second.id })).map { it.second }
 
-        // Merge optimistic messages that might not yet be indexed/persisted
-        val existingUnconfirmed = newFlow.value.filter { opt -> list.none { it.id == opt.id } }
-        newFlow.value = list + existingUnconfirmed
+        // Merge only optimistic temporary messages that are currently sending
+        val pendingUnsent = newFlow.value.filter { it.status == MessageStatus.SENDING && it.id.startsWith("temp_") }
+        newFlow.value = list + pendingUnsent
       }
     }
     messageListeners[chatId] = listener
@@ -651,17 +803,28 @@ class FirebaseChatService(
 
     val currentUserName = _currentUser.value?.displayName ?: "Пользователь"
     val isGroupChat = cleanRecipient.startsWith("group_")
-    val chatId = if (isGroupChat) cleanRecipient else listOf(currentUid, cleanRecipient).sorted().joinToString("_")
+    val actualRecipientId = when {
+      isGroupChat -> cleanRecipient
+      cleanRecipient.contains("_") && cleanRecipient.startsWith("${currentUid}_") -> cleanRecipient.removePrefix("${currentUid}_")
+      cleanRecipient.contains("_") && cleanRecipient.endsWith("_${currentUid}") -> cleanRecipient.removeSuffix("_${currentUid}")
+      cleanRecipient.contains("_") -> cleanRecipient.split("_").firstOrNull { it != currentUid && it.isNotBlank() } ?: cleanRecipient
+      else -> cleanRecipient
+    }
+    val chatId = if (isGroupChat) cleanRecipient else listOf(currentUid, actualRecipientId).sorted().joinToString("_")
     val messageId = "msg_${System.currentTimeMillis()}_${(1000..9999).random()}"
 
     val partnerDialog = _chats.value.firstOrNull { it.id == chatId }
     val memberIds = if (isGroupChat) {
       partnerDialog?.memberIds?.ifEmpty { listOf(currentUid) } ?: listOf(currentUid)
     } else {
-      listOf(currentUid, cleanRecipient)
+      listOf(currentUid, actualRecipientId).distinct()
     }
     val partnerName = partnerDialog?.name?.ifBlank { null }
-      ?: if (cleanRecipient.startsWith("u_")) "@${cleanRecipient.removePrefix("u_")}" else "Собеседник"
+      ?: if (actualRecipientId.startsWith("u_")) "@${actualRecipientId.removePrefix("u_")}" else "Собеседник"
+
+    if (!isGroupChat && actualRecipientId.isNotBlank() && actualRecipientId != currentUid) {
+      ensurePartnerListener(actualRecipientId)
+    }
 
     // 1. Optimistic instant in-memory update
     val optimisticMsg = ChatMessage(
@@ -669,7 +832,7 @@ class FirebaseChatService(
       chatId = chatId,
       senderId = currentUid,
       senderName = currentUserName,
-      recipientId = cleanRecipient,
+      recipientId = actualRecipientId,
       text = cleanText,
       timestamp = formatTimestamp(Timestamp.now()),
       isOutgoing = true,
@@ -690,9 +853,9 @@ class FirebaseChatService(
     } else {
       ChatDialog(
         id = chatId,
-        partnerId = if (isGroupChat) "" else cleanRecipient,
+        partnerId = if (isGroupChat) "" else actualRecipientId,
         name = partnerName,
-        participantUsername = if (cleanRecipient.startsWith("u_")) "@${cleanRecipient.removePrefix("u_")}" else "@${cleanRecipient.take(8)}",
+        participantUsername = if (actualRecipientId.startsWith("u_")) "@${actualRecipientId.removePrefix("u_")}" else "@${actualRecipientId.take(8)}",
         avatarColorHex = getDeterministicColor(partnerName),
         lastMessage = cleanText,
         lastMessageTime = optimisticMsg.timestamp,
@@ -715,6 +878,9 @@ class FirebaseChatService(
       "senderName" to currentUserName,
       "text" to cleanText,
       "memberIds" to memberIds,
+      "status" to "SENT",
+      "isRead" to false,
+      "readBy" to listOf(currentUid),
       "createdAt" to FieldValue.serverTimestamp()
     )
 
@@ -772,17 +938,28 @@ class FirebaseChatService(
 
     val currentUserName = _currentUser.value?.displayName ?: "Пользователь"
     val isGroupChat = cleanRecipient.startsWith("group_")
-    val chatId = if (isGroupChat) cleanRecipient else listOf(currentUid, cleanRecipient).sorted().joinToString("_")
+    val actualRecipientId = when {
+      isGroupChat -> cleanRecipient
+      cleanRecipient.contains("_") && cleanRecipient.startsWith("${currentUid}_") -> cleanRecipient.removePrefix("${currentUid}_")
+      cleanRecipient.contains("_") && cleanRecipient.endsWith("_${currentUid}") -> cleanRecipient.removeSuffix("_${currentUid}")
+      cleanRecipient.contains("_") -> cleanRecipient.split("_").firstOrNull { it != currentUid && it.isNotBlank() } ?: cleanRecipient
+      else -> cleanRecipient
+    }
+    val chatId = if (isGroupChat) cleanRecipient else listOf(currentUid, actualRecipientId).sorted().joinToString("_")
     val messageId = "msg_media_${System.currentTimeMillis()}_${(1000..9999).random()}"
 
     val partnerDialog = _chats.value.firstOrNull { it.id == chatId }
     val memberIds = if (isGroupChat) {
       partnerDialog?.memberIds?.ifEmpty { listOf(currentUid) } ?: listOf(currentUid)
     } else {
-      listOf(currentUid, cleanRecipient)
+      listOf(currentUid, actualRecipientId).distinct()
     }
     val partnerName = partnerDialog?.name?.ifBlank { null }
-      ?: if (cleanRecipient.startsWith("u_")) "@${cleanRecipient.removePrefix("u_")}" else "Собеседник"
+      ?: if (actualRecipientId.startsWith("u_")) "@${actualRecipientId.removePrefix("u_")}" else "Собеседник"
+
+    if (!isGroupChat && actualRecipientId.isNotBlank() && actualRecipientId != currentUid) {
+      ensurePartnerListener(actualRecipientId)
+    }
 
     val previewText = when (mediaType) {
       MediaType.PHOTO -> if (captionText.isNotBlank()) "📷 $captionText" else "📷 Фото"
@@ -811,7 +988,7 @@ class FirebaseChatService(
       chatId = chatId,
       senderId = currentUid,
       senderName = currentUserName,
-      recipientId = cleanRecipient,
+      recipientId = actualRecipientId,
       text = captionText,
       timestamp = formatTimestamp(Timestamp.now()),
       isOutgoing = true,
@@ -845,9 +1022,9 @@ class FirebaseChatService(
     } else {
       ChatDialog(
         id = chatId,
-        partnerId = if (isGroupChat) "" else cleanRecipient,
+        partnerId = if (isGroupChat) "" else actualRecipientId,
         name = partnerName,
-        participantUsername = if (cleanRecipient.startsWith("u_")) "@${cleanRecipient.removePrefix("u_")}" else "@${cleanRecipient.take(8)}",
+        participantUsername = if (actualRecipientId.startsWith("u_")) "@${actualRecipientId.removePrefix("u_")}" else "@${actualRecipientId.take(8)}",
         avatarColorHex = getDeterministicColor(partnerName),
         lastMessage = previewText,
         lastMessageTime = optimisticMsg.timestamp,
@@ -879,6 +1056,9 @@ class FirebaseChatService(
       "totalChunks" to totalChunks,
       "expiresAtMillis" to expiresAt,
       "isPurgedFromServer" to false,
+      "status" to "SENT",
+      "isRead" to false,
+      "readBy" to listOf(currentUid),
       "createdAt" to FieldValue.serverTimestamp()
     )
 
@@ -1165,8 +1345,74 @@ class FirebaseChatService(
     return createChatWithUser(dummyUser)
   }
 
+  override fun setOnlinePresence(isOnline: Boolean) {
+    val currentUid = _currentUser.value?.id ?: auth.currentUser?.uid ?: return
+    val user = _currentUser.value
+    val now = System.currentTimeMillis()
+    _currentUser.value = user?.copy(isOnline = isOnline, lastSeenMillis = now)
+    scope.launch {
+      try {
+        val userDoc = db.collection("users").document(currentUid)
+        val updateMap = mutableMapOf<String, Any>(
+          "userId" to currentUid,
+          "isOnline" to isOnline,
+          "lastSeenMillis" to now,
+          "lastSeen" to FieldValue.serverTimestamp(),
+          "updatedAt" to FieldValue.serverTimestamp()
+        )
+        if (user != null) {
+          updateMap["username"] = user.username
+          updateMap["displayName"] = user.displayName
+          if (user.bio.isNotBlank()) updateMap["status"] = user.bio
+          if (user.bio.isNotBlank()) updateMap["bio"] = user.bio
+          if (user.birthDate.isNotBlank()) updateMap["birthDate"] = user.birthDate
+        }
+        userDoc.set(updateMap, SetOptions.merge()).await()
+      } catch (e: Exception) {
+        Log.w("MaxoGram", "setOnlinePresence error: ${e.message}")
+      }
+    }
+  }
+
   override fun markAsRead(chatId: String) {
-    // Unread count tracking
+    val currentUid = _currentUser.value?.id ?: auth.currentUser?.uid ?: return
+    _chats.value = _chats.value.map { dialog ->
+      if (dialog.id == chatId) dialog.copy(unreadCount = 0) else dialog
+    }
+    // Optimistically update in-memory messages immediately
+    messagesMap[chatId]?.let { flow ->
+      flow.value = flow.value.map { msg ->
+        if (msg.senderId != currentUid && msg.status != MessageStatus.READ) {
+          msg.copy(status = MessageStatus.READ)
+        } else msg
+      }
+    }
+    scope.launch {
+      try {
+        val msgs = db.collection("chats")
+          .document(chatId)
+          .collection("messages")
+          .limit(80)
+          .get()
+          .await()
+        for (doc in msgs.documents) {
+          val senderId = doc.getString("senderId") ?: ""
+          val isRead = doc.getBoolean("isRead") ?: false
+          if (senderId != currentUid && !isRead) {
+            doc.reference.update(
+              mapOf(
+                "isRead" to true,
+                "status" to "READ",
+                "readBy" to FieldValue.arrayUnion(currentUid),
+                "readAt" to FieldValue.serverTimestamp()
+              )
+            )
+          }
+        }
+      } catch (e: Exception) {
+        Log.w("MaxoGram", "markAsRead error: ${e.message}")
+      }
+    }
   }
 
   override suspend fun updateAvatar(type: String, value: String, colorHex: Long?): Result<Unit> {
@@ -1230,7 +1476,14 @@ class FirebaseChatService(
     }
   }
 
-  override suspend fun updateProfile(username: String, displayName: String, avatarType: String, avatarValue: String): Result<Unit> {
+  override suspend fun updateProfile(
+    username: String,
+    displayName: String,
+    avatarType: String,
+    avatarValue: String,
+    bio: String,
+    birthDate: String
+  ): Result<Unit> {
     val currentUid = _currentUser.value?.id ?: auth.currentUser?.uid ?: return Result.failure(IllegalStateException("Не выполнен вход"))
     val cleanUsername = username.trim().removePrefix("@").lowercase()
     val cleanDisplayName = displayName.trim()
@@ -1246,6 +1499,9 @@ class FirebaseChatService(
           "displayName" to cleanDisplayName,
           "avatarType" to avatarType,
           "avatarValue" to avatarValue,
+          "bio" to bio.trim(),
+          "status" to bio.trim(),
+          "birthDate" to birthDate.trim(),
           "updatedAt" to FieldValue.serverTimestamp()
         ),
         SetOptions.merge()
@@ -1254,7 +1510,9 @@ class FirebaseChatService(
         username = cleanUsername,
         displayName = cleanDisplayName,
         avatarType = avatarType,
-        avatarValue = avatarValue
+        avatarValue = avatarValue,
+        bio = bio.trim(),
+        birthDate = birthDate.trim()
       )
       if (updated != null) {
         _currentUser.value = updated
@@ -1273,6 +1531,716 @@ class FirebaseChatService(
       timeFormat.format(ts.toDate())
     } catch (_: Exception) {
       "..."
+    }
+  }
+
+  private fun startAudioStreamListener(chatId: String, myUid: String) {
+    if (audioStreamListeners.containsKey(chatId)) return
+    lastSeenDocSeq.clear()
+    val listener = db.collection("chats").document(chatId)
+      .collection("audio_stream")
+      .addSnapshotListener { snapshot, error ->
+        if (error != null || snapshot == null) return@addSnapshotListener
+        snapshot.documents.forEach { doc ->
+          val senderId = doc.getString("senderId") ?: ""
+          if (senderId != myUid && senderId.isNotBlank()) {
+            val seq = doc.getLong("seq") ?: doc.getLong("time") ?: 0L
+            val lastSeq = lastSeenDocSeq[doc.id] ?: 0L
+            if (seq > lastSeq) {
+              lastSeenDocSeq[doc.id] = seq
+              val dataB64 = doc.getString("data")
+              if (!dataB64.isNullOrEmpty()) {
+                try {
+                  val pcm = Base64.decode(dataB64, Base64.NO_WRAP)
+                  callAudioManager.playIncomingAudioPacket(pcm)
+                } catch (_: Exception) {}
+              }
+            }
+          }
+        }
+      }
+    audioStreamListeners[chatId] = listener
+  }
+
+  private fun stopAudioStream(chatId: String) {
+    audioStreamListeners[chatId]?.remove()
+    audioStreamListeners.remove(chatId)
+    lastSeenDocSeq.clear()
+    val myUid = _currentUser.value?.id ?: return
+    scope.launch(Dispatchers.IO) {
+      try {
+        for (i in 0..3) {
+          db.collection("chats").document(chatId).collection("audio_stream").document("${myUid}_$i").delete()
+        }
+      } catch (_: Exception) {}
+    }
+  }
+
+  private fun ensureCallListener(chatId: String, myUid: String) {
+    if (chatCallListeners.containsKey(chatId)) return
+    val listener = db.collection("chats").document(chatId)
+      .collection("call").document("current")
+      .addSnapshotListener { snapshot, error ->
+        if (error != null || snapshot == null || !snapshot.exists()) {
+          val active = _currentCall.value
+          if (active != null && active.chatId == chatId && active.state == CallState.CONNECTED) {
+            _currentCall.value = active.copy(state = CallState.ENDED)
+            callAudioManager.playCallEndedTone()
+            callAudioManager.stopUdpStreaming()
+            stopAudioStream(chatId)
+            try {
+              CallForegroundService.stopCall(context)
+            } catch (_: Throwable) {}
+            scope.launch {
+              delay(1200)
+              _currentCall.value = null
+            }
+          }
+          return@addSnapshotListener
+        }
+
+        val stateStr = snapshot.getString("state") ?: "IDLE"
+        val recipientId = snapshot.getString("recipientId") ?: ""
+        val callerId = snapshot.getString("callerId") ?: ""
+        val callId = snapshot.getString("id") ?: snapshot.id
+        val startedAtMillis = snapshot.getLong("startedAtMillis") ?: 0L
+
+        // Stale call protection: if call was started more than 5 minutes ago, clean up and do not ring!
+        if ((stateStr == "RINGING" || stateStr == "CONNECTED") && startedAtMillis > 0L && (System.currentTimeMillis() - startedAtMillis > 300_000L)) {
+          try {
+            db.collection("chats").document(chatId)
+              .collection("call").document("current")
+              .delete()
+          } catch (_: Exception) {}
+          return@addSnapshotListener
+        }
+
+        if (stateStr == "RINGING" && recipientId == myUid) {
+          if (_currentCall.value == null || _currentCall.value?.id != callId) {
+            val session = CallSession(
+              id = callId,
+              chatId = chatId,
+              callerId = callerId,
+              callerName = snapshot.getString("callerName") ?: "Собеседник",
+              callerAvatarType = snapshot.getString("callerAvatarType") ?: "INITIALS",
+              callerAvatarValue = snapshot.getString("callerAvatarValue") ?: "",
+              callerAvatarColor = snapshot.getLong("callerAvatarColor") ?: 0xFF00C6FF,
+              recipientId = recipientId,
+              recipientName = _currentUser.value?.displayName ?: "",
+              recipientAvatarType = _currentUser.value?.avatarType ?: "INITIALS",
+              recipientAvatarValue = _currentUser.value?.avatarValue ?: "",
+              recipientAvatarColor = _currentUser.value?.avatarColorHex ?: 0xFF00C6FF,
+              isGroup = false,
+              state = CallState.RINGING,
+              startedAtMillis = startedAtMillis.takeIf { it > 0 } ?: System.currentTimeMillis(),
+              isSpeakerOn = true,
+              isIncoming = true
+            )
+            _currentCall.value = session
+            callAudioManager.startIncomingRinging(scope)
+            try {
+              CallForegroundService.startIncomingCall(context, callId, chatId, session.callerName)
+            } catch (_: Throwable) {}
+          }
+        } else if (stateStr == "CONNECTED") {
+          val current = _currentCall.value
+          if (current != null && current.id == callId && current.state != CallState.CONNECTED) {
+            _currentCall.value = current.copy(
+              state = CallState.CONNECTED,
+              connectedAtMillis = snapshot.getLong("connectedAtMillis") ?: System.currentTimeMillis()
+            )
+            callAudioManager.playCallConnectedTone()
+            callAudioManager.startMicMonitoring(scope, isMuted = current.isMuted)
+            try {
+              CallForegroundService.startActiveCall(context, callId, chatId, current.recipientName.ifBlank { "Собеседник" })
+            } catch (_: Throwable) {}
+          }
+
+          startAudioStreamListener(chatId, myUid)
+
+          // Direct UDP VoIP audio streaming between devices
+          val callerIp = snapshot.getString("callerIp") ?: ""
+          val callerPort = snapshot.getLong("callerPort")?.toInt() ?: 50050
+          val recipientIp = snapshot.getString("recipientIp") ?: ""
+          val recipientPort = snapshot.getLong("recipientPort")?.toInt() ?: 50052
+
+          if (callerId == myUid && recipientIp.isNotBlank()) {
+            callAudioManager.startUdpStreaming(scope, recipientIp, recipientPort, callerPort)
+          } else if (recipientId == myUid && callerIp.isNotBlank()) {
+            callAudioManager.startUdpStreaming(scope, callerIp, callerPort, recipientPort)
+          }
+        } else if (stateStr == "ENDED" || stateStr == "REJECTED") {
+          val current = _currentCall.value
+          if (current != null && current.id == callId && current.state != CallState.ENDED) {
+            _currentCall.value = current.copy(state = CallState.ENDED)
+            callAudioManager.playCallEndedTone()
+            callAudioManager.stopUdpStreaming()
+            stopAudioStream(chatId)
+            try {
+              CallForegroundService.stopCall(context)
+            } catch (_: Throwable) {}
+            scope.launch {
+              delay(1200)
+              _currentCall.value = null
+            }
+          }
+        }
+      }
+    chatCallListeners[chatId] = listener
+  }
+
+  override fun startPrivateCall(
+    chatId: String,
+    recipientId: String,
+    recipientName: String,
+    recipientAvatarType: String,
+    recipientAvatarValue: String,
+    recipientAvatarColor: Long
+  ) {
+    val myUser = _currentUser.value ?: return
+    val callId = "call_${System.currentTimeMillis()}"
+    val localIp = MediaUtils.getLocalIpAddress()
+    val callerPort = 50050
+    val recipientPort = 50052
+
+    val session = CallSession(
+      id = callId,
+      chatId = chatId,
+      callerId = myUser.id,
+      callerName = myUser.displayName,
+      callerAvatarType = myUser.avatarType,
+      callerAvatarValue = myUser.avatarValue,
+      callerAvatarColor = myUser.avatarColorHex,
+      recipientId = recipientId,
+      recipientName = recipientName,
+      recipientAvatarType = recipientAvatarType,
+      recipientAvatarValue = recipientAvatarValue,
+      recipientAvatarColor = recipientAvatarColor,
+      isGroup = false,
+      state = CallState.CALLING,
+      startedAtMillis = System.currentTimeMillis(),
+      isSpeakerOn = true,
+      isIncoming = false
+    )
+    _currentCall.value = session
+    callAudioManager.setSpeakerphoneOn(true)
+    callAudioManager.startRingback(scope)
+    callAudioManager.startMicMonitoring(scope, isMuted = false)
+    try {
+      CallForegroundService.startActiveCall(context, callId, chatId, recipientName)
+    } catch (_: Throwable) {}
+
+    ensureCallListener(chatId, myUser.id)
+
+    db.collection("chats").document(chatId)
+      .collection("call").document("current")
+      .set(mapOf(
+        "id" to callId,
+        "chatId" to chatId,
+        "callerId" to myUser.id,
+        "callerName" to myUser.displayName,
+        "callerAvatarType" to myUser.avatarType,
+        "callerAvatarValue" to myUser.avatarValue,
+        "callerAvatarColor" to myUser.avatarColorHex,
+        "recipientId" to recipientId,
+        "recipientName" to recipientName,
+        "recipientAvatarType" to recipientAvatarType,
+        "recipientAvatarValue" to recipientAvatarValue,
+        "recipientAvatarColor" to recipientAvatarColor,
+        "callerIp" to localIp,
+        "callerPort" to callerPort,
+        "recipientPort" to recipientPort,
+        "isGroup" to false,
+        "state" to "RINGING",
+        "startedAtMillis" to System.currentTimeMillis()
+      ), SetOptions.merge())
+  }
+
+  override fun acceptCall(callId: String) {
+    val call = _currentCall.value ?: return
+    val myUid = _currentUser.value?.id ?: ""
+    val localIp = MediaUtils.getLocalIpAddress()
+    callAudioManager.stopRingback()
+    callAudioManager.playCallConnectedTone()
+    callAudioManager.setSpeakerphoneOn(true)
+    callAudioManager.startMicMonitoring(scope, isMuted = call.isMuted)
+    startAudioStreamListener(call.chatId, myUid)
+    try {
+      CallForegroundService.startActiveCall(context, callId, call.chatId, call.callerName)
+    } catch (_: Throwable) {}
+    _currentCall.value = call.copy(
+      state = CallState.CONNECTED,
+      isSpeakerOn = true,
+      connectedAtMillis = System.currentTimeMillis()
+    )
+
+    db.collection("chats").document(call.chatId)
+      .collection("call").document("current")
+      .update(mapOf(
+        "state" to "CONNECTED",
+        "recipientIp" to localIp,
+        "connectedAtMillis" to System.currentTimeMillis()
+      ))
+  }
+
+  override fun rejectCall(callId: String) {
+    val call = _currentCall.value
+    callAudioManager.stopRingback()
+    callAudioManager.playCallEndedTone()
+    callAudioManager.stopUdpStreaming()
+    if (call != null) {
+      stopAudioStream(call.chatId)
+    }
+    try {
+      CallForegroundService.stopCall(context)
+    } catch (_: Throwable) {}
+    _currentCall.value = call?.copy(state = CallState.REJECTED)
+    scope.launch {
+      delay(1000)
+      _currentCall.value = null
+    }
+
+    if (call != null) {
+      db.collection("chats").document(call.chatId)
+        .collection("call").document("current")
+        .update("state", "REJECTED")
+    }
+  }
+
+  override fun endCall(callId: String) {
+    val call = _currentCall.value
+    callAudioManager.stopRingback()
+    callAudioManager.playCallEndedTone()
+    callAudioManager.stopUdpStreaming()
+    if (call != null) {
+      stopAudioStream(call.chatId)
+    }
+    try {
+      CallForegroundService.stopCall(context)
+    } catch (_: Throwable) {}
+    _currentCall.value = call?.copy(
+      state = CallState.ENDED,
+      endedAtMillis = System.currentTimeMillis()
+    )
+    scope.launch {
+      delay(1200)
+      _currentCall.value = null
+    }
+
+    if (call != null) {
+      db.collection("chats").document(call.chatId)
+        .collection("call").document("current")
+        .update("state", "ENDED")
+    }
+  }
+
+  override fun toggleCallMute() {
+    val call = _currentCall.value ?: return
+    val newMute = !call.isMuted
+    callAudioManager.setMicrophoneMute(newMute)
+    if (newMute) {
+      callAudioManager.stopMicMonitoring()
+    } else {
+      callAudioManager.startMicMonitoring(scope, isMuted = false)
+    }
+    _currentCall.value = call.copy(isMuted = newMute)
+  }
+
+  override fun toggleCallSpeaker() {
+    val call = _currentCall.value ?: return
+    val newSpeaker = !call.isSpeakerOn
+    callAudioManager.setSpeakerphoneOn(newSpeaker)
+    _currentCall.value = call.copy(isSpeakerOn = newSpeaker)
+  }
+
+  override fun getVoiceParticipantsFlow(chatId: String): StateFlow<List<VoiceParticipant>> {
+    val flow = voiceParticipantsMap.getOrPut(chatId) {
+      MutableStateFlow(emptyList())
+    }
+    if (!voiceListeners.containsKey(chatId)) {
+      val listener = db.collection("chats").document(chatId)
+        .collection("voice_participants")
+        .addSnapshotListener { snapshot, error ->
+          if (error != null || snapshot == null) return@addSnapshotListener
+          val list = snapshot.documents.mapNotNull { doc ->
+            VoiceParticipant(
+              userId = doc.getString("userId") ?: doc.id,
+              displayName = doc.getString("displayName") ?: "Участник",
+              avatarType = doc.getString("avatarType") ?: "INITIALS",
+              avatarValue = doc.getString("avatarValue") ?: "",
+              avatarColorHex = doc.getLong("avatarColorHex") ?: 0xFF00C6FF,
+              isMuted = doc.getBoolean("isMuted") ?: false,
+              isDeafened = doc.getBoolean("isDeafened") ?: false,
+              isSpeaking = doc.getBoolean("isSpeaking") ?: false,
+              joinedAtMillis = doc.getLong("joinedAtMillis") ?: 0L
+            )
+          }.sortedBy { it.joinedAtMillis }
+          flow.value = list
+        }
+      voiceListeners[chatId] = listener
+    }
+    return flow.asStateFlow()
+  }
+
+  override fun joinGroupVoice(chatId: String) {
+    val myUser = _currentUser.value ?: return
+    _activeVoiceChannelChatId.value = chatId
+    callAudioManager.playCallConnectedTone()
+    callAudioManager.startMicMonitoring(scope, isMuted = isVoiceMutedState)
+    startAudioStreamListener(chatId, myUser.id)
+    try {
+      CallForegroundService.startActiveCall(context, "voice_$chatId", chatId, "Голосовой канал")
+    } catch (_: Throwable) {}
+
+    // Ensure snapshot listener is active
+    getVoiceParticipantsFlow(chatId)
+
+    val data = mapOf(
+      "userId" to myUser.id,
+      "displayName" to myUser.displayName,
+      "avatarType" to myUser.avatarType,
+      "avatarValue" to myUser.avatarValue,
+      "avatarColorHex" to myUser.avatarColorHex,
+      "isMuted" to isVoiceMutedState,
+      "isDeafened" to isVoiceDeafenedState,
+      "isSpeaking" to false,
+      "joinedAtMillis" to System.currentTimeMillis()
+    )
+
+    db.collection("chats").document(chatId)
+      .collection("voice_participants").document(myUser.id)
+      .set(data, SetOptions.merge())
+  }
+
+  override fun leaveGroupVoice(chatId: String) {
+    if (_activeVoiceChannelChatId.value == chatId) {
+      _activeVoiceChannelChatId.value = null
+      callAudioManager.playCallEndedTone()
+      callAudioManager.stopMicMonitoring()
+      CallForegroundService.stopCall(context)
+      stopAudioStream(chatId)
+    }
+    val myId = _currentUser.value?.id ?: return
+    db.collection("chats").document(chatId)
+      .collection("voice_participants").document(myId)
+      .delete()
+  }
+
+  override fun toggleVoiceMute() {
+    isVoiceMutedState = !isVoiceMutedState
+    callAudioManager.setMicrophoneMute(isVoiceMutedState)
+    if (isVoiceMutedState) {
+      callAudioManager.stopMicMonitoring()
+    } else {
+      callAudioManager.startMicMonitoring(scope, isMuted = false)
+    }
+    val activeChat = _activeVoiceChannelChatId.value ?: return
+    val myId = _currentUser.value?.id ?: return
+    db.collection("chats").document(activeChat)
+      .collection("voice_participants").document(myId)
+      .update(mapOf(
+        "isMuted" to isVoiceMutedState,
+        "isSpeaking" to false
+      ))
+  }
+
+  override fun toggleVoiceDeafen() {
+    isVoiceDeafenedState = !isVoiceDeafenedState
+    callAudioManager.isDeafened = isVoiceDeafenedState
+    if (isVoiceDeafenedState && !isVoiceMutedState) {
+      toggleVoiceMute()
+    }
+    val activeChat = _activeVoiceChannelChatId.value ?: return
+    val myId = _currentUser.value?.id ?: return
+    db.collection("chats").document(activeChat)
+      .collection("voice_participants").document(myId)
+      .update("isDeafened", isVoiceDeafenedState)
+  }
+
+  override fun updateSpeakingState(chatId: String, isSpeaking: Boolean) {
+    val myId = _currentUser.value?.id ?: return
+    if (!isVoiceMutedState) {
+      db.collection("chats").document(chatId)
+        .collection("voice_participants").document(myId)
+        .update("isSpeaking", isSpeaking)
+    }
+  }
+
+  override suspend fun deleteMessage(chatId: String, messageId: String): Boolean = withContext(Dispatchers.IO) {
+    try {
+      val chatRef = db.collection("chats").document(chatId)
+      try {
+        val chunks = chatRef.collection("messages").document(messageId).collection("chunks").get().await()
+        for (chunk in chunks.documents) {
+          chunk.reference.delete()
+        }
+      } catch (_: Exception) {}
+
+      chatRef.collection("messages").document(messageId).delete().await()
+
+      messagesMap[chatId]?.let { flow ->
+        flow.value = flow.value.filter { it.id != messageId }
+      }
+
+      val remaining = messagesMap[chatId]?.value ?: emptyList()
+      val lastMsg = remaining.lastOrNull()
+      try {
+        val lastText = when {
+          lastMsg == null -> ""
+          lastMsg.mediaType != MediaType.NONE -> when (lastMsg.mediaType) {
+            MediaType.PHOTO -> if (lastMsg.text.isNotBlank()) "📷 ${lastMsg.text}" else "📷 Фото"
+            MediaType.VIDEO -> if (lastMsg.text.isNotBlank()) "🎥 ${lastMsg.text}" else "🎥 Видео"
+            MediaType.FILE -> "📎 Файл"
+            else -> lastMsg.text
+          }
+          else -> lastMsg.text
+        }
+        chatRef.update(
+          mapOf(
+            "lastMessage" to lastText,
+            "lastMessageSenderId" to (lastMsg?.senderId ?: ""),
+            "lastMessageTimestamp" to FieldValue.serverTimestamp()
+          )
+        ).await()
+      } catch (_: Exception) {}
+
+      true
+    } catch (e: Exception) {
+      Log.e("FirebaseChatService", "deleteMessage error: ${e.message}")
+      false
+    }
+  }
+
+  override suspend fun deleteChat(chatId: String): Boolean = withContext(Dispatchers.IO) {
+    try {
+      messageListeners[chatId]?.remove()
+      messageListeners.remove(chatId)
+      chatCallListeners[chatId]?.remove()
+      chatCallListeners.remove(chatId)
+      audioStreamListeners[chatId]?.remove()
+      audioStreamListeners.remove(chatId)
+      voiceListeners[chatId]?.remove()
+      voiceListeners.remove(chatId)
+
+      try {
+        db.collection("chats").document(chatId).collection("call").document("current").delete().await()
+      } catch (_: Exception) {}
+
+      db.collection("chats").document(chatId).delete().await()
+
+      _chats.value = _chats.value.filter { it.id != chatId }
+      messagesMap.remove(chatId)
+      true
+    } catch (e: Exception) {
+      Log.e("FirebaseChatService", "deleteChat error: ${e.message}")
+      false
+    }
+  }
+
+  override suspend fun deleteMessageForMe(chatId: String, messageId: String): Boolean = withContext(Dispatchers.IO) {
+    try {
+      messagesMap[chatId]?.let { flow ->
+        flow.value = flow.value.filter { it.id != messageId }
+      }
+      true
+    } catch (e: Exception) {
+      false
+    }
+  }
+
+  override suspend fun addParticipantsToGroup(chatId: String, newMemberIds: List<String>): Boolean = withContext(Dispatchers.IO) {
+    try {
+      val currentUid = _currentUser.value?.id ?: auth.currentUser?.uid ?: ""
+      val currentUserName = _currentUser.value?.displayName ?: "Пользователь"
+      val chatRef = db.collection("chats").document(chatId)
+
+      val memberNames = mutableMapOf<String, String>()
+      newMemberIds.forEach { id ->
+        val partner = partnerProfiles[id] ?: _searchResults.value.firstOrNull { it.id == id }
+        memberNames[id] = partner?.displayName ?: if (id.startsWith("u_")) "@${id.removePrefix("u_")}" else "@$id"
+      }
+
+      val updates = mutableMapOf<String, Any>(
+        "memberIds" to FieldValue.arrayUnion(*newMemberIds.toTypedArray()),
+        "updatedAt" to FieldValue.serverTimestamp()
+      )
+      memberNames.forEach { (k, v) ->
+        updates["memberNames.$k"] = v
+      }
+
+      chatRef.update(updates).await()
+
+      val addedNames = memberNames.values.joinToString(", ")
+      val sysMsgId = "msg_${System.currentTimeMillis()}_${(1000..9999).random()}"
+      val sysMsgPayload = mapOf(
+        "messageId" to sysMsgId,
+        "chatId" to chatId,
+        "senderId" to currentUid,
+        "senderName" to currentUserName,
+        "text" to "🎉 $currentUserName добавил(а) $addedNames в группу",
+        "memberIds" to (_chats.value.firstOrNull { it.id == chatId }?.memberIds ?: emptyList()) + newMemberIds,
+        "createdAt" to FieldValue.serverTimestamp()
+      )
+      try {
+        chatRef.collection("messages").document(sysMsgId).set(sysMsgPayload).await()
+      } catch (_: Exception) {}
+
+      _chats.value = _chats.value.map { chat ->
+        if (chat.id == chatId) {
+          val updated = (chat.memberIds + newMemberIds).distinct()
+          chat.copy(memberIds = updated, participantUsername = "${updated.size} участников")
+        } else chat
+      }
+      true
+    } catch (e: Exception) {
+      Log.e("FirebaseChatService", "addParticipantsToGroup error: ${e.message}")
+      false
+    }
+  }
+
+  override suspend fun removeParticipantFromGroup(chatId: String, memberId: String): Boolean = withContext(Dispatchers.IO) {
+    try {
+      val currentUid = _currentUser.value?.id ?: auth.currentUser?.uid ?: ""
+      val currentUserName = _currentUser.value?.displayName ?: "Создатель"
+      val chat = _chats.value.firstOrNull { it.id == chatId }
+      val targetName = chat?.memberNames?.get(memberId) ?: "участника"
+      val chatRef = db.collection("chats").document(chatId)
+
+      chatRef.update(
+        mapOf(
+          "memberIds" to FieldValue.arrayRemove(memberId),
+          "updatedAt" to FieldValue.serverTimestamp()
+        )
+      ).await()
+
+      val sysMsgId = "msg_${System.currentTimeMillis()}_${(1000..9999).random()}"
+      val sysMsgPayload = mapOf(
+        "messageId" to sysMsgId,
+        "chatId" to chatId,
+        "senderId" to currentUid,
+        "senderName" to currentUserName,
+        "text" to "👤 $currentUserName исключил(а) $targetName из группы",
+        "memberIds" to (chat?.memberIds?.filter { it != memberId } ?: emptyList()),
+        "createdAt" to FieldValue.serverTimestamp()
+      )
+      try {
+        chatRef.collection("messages").document(sysMsgId).set(sysMsgPayload).await()
+      } catch (_: Exception) {}
+
+      _chats.value = _chats.value.map { c ->
+        if (c.id == chatId) {
+          val updated = c.memberIds.filter { it != memberId }
+          c.copy(memberIds = updated, participantUsername = "${updated.size} участников")
+        } else c
+      }
+      true
+    } catch (e: Exception) {
+      Log.e("FirebaseChatService", "removeParticipantFromGroup error: ${e.message}")
+      false
+    }
+  }
+
+  override suspend fun blockParticipantInGroup(chatId: String, memberId: String): Boolean = withContext(Dispatchers.IO) {
+    try {
+      val currentUid = _currentUser.value?.id ?: auth.currentUser?.uid ?: ""
+      val currentUserName = _currentUser.value?.displayName ?: "Создатель"
+      val chat = _chats.value.firstOrNull { it.id == chatId }
+      val targetName = chat?.memberNames?.get(memberId) ?: "участника"
+      val chatRef = db.collection("chats").document(chatId)
+
+      chatRef.update(
+        mapOf(
+          "memberIds" to FieldValue.arrayRemove(memberId),
+          "blockedMemberIds" to FieldValue.arrayUnion(memberId),
+          "updatedAt" to FieldValue.serverTimestamp()
+        )
+      ).await()
+
+      val sysMsgId = "msg_${System.currentTimeMillis()}_${(1000..9999).random()}"
+      val sysMsgPayload = mapOf(
+        "messageId" to sysMsgId,
+        "chatId" to chatId,
+        "senderId" to currentUid,
+        "senderName" to currentUserName,
+        "text" to "🚫 $currentUserName заблокировал(а) $targetName в группе",
+        "memberIds" to (chat?.memberIds?.filter { it != memberId } ?: emptyList()),
+        "createdAt" to FieldValue.serverTimestamp()
+      )
+      try {
+        chatRef.collection("messages").document(sysMsgId).set(sysMsgPayload).await()
+      } catch (_: Exception) {}
+
+      _chats.value = _chats.value.map { c ->
+        if (c.id == chatId) {
+          val updated = c.memberIds.filter { it != memberId }
+          val blocked = (c.blockedMemberIds + memberId).distinct()
+          c.copy(memberIds = updated, blockedMemberIds = blocked, participantUsername = "${updated.size} участников")
+        } else c
+      }
+      true
+    } catch (e: Exception) {
+      Log.e("FirebaseChatService", "blockParticipantInGroup error: ${e.message}")
+      false
+    }
+  }
+
+  override suspend fun unblockParticipantInGroup(chatId: String, memberId: String): Boolean = withContext(Dispatchers.IO) {
+    try {
+      val chatRef = db.collection("chats").document(chatId)
+      chatRef.update(
+        mapOf(
+          "blockedMemberIds" to FieldValue.arrayRemove(memberId),
+          "updatedAt" to FieldValue.serverTimestamp()
+        )
+      ).await()
+
+      _chats.value = _chats.value.map { c ->
+        if (c.id == chatId) {
+          c.copy(blockedMemberIds = c.blockedMemberIds.filter { it != memberId })
+        } else c
+      }
+      true
+    } catch (e: Exception) {
+      Log.e("FirebaseChatService", "unblockParticipantInGroup error: ${e.message}")
+      false
+    }
+  }
+
+  override suspend fun leaveGroup(chatId: String): Boolean = withContext(Dispatchers.IO) {
+    try {
+      val currentUid = _currentUser.value?.id ?: auth.currentUser?.uid ?: ""
+      val currentUserName = _currentUser.value?.displayName ?: "Пользователь"
+      val chat = _chats.value.firstOrNull { it.id == chatId }
+      val chatRef = db.collection("chats").document(chatId)
+
+      chatRef.update(
+        mapOf(
+          "memberIds" to FieldValue.arrayRemove(currentUid),
+          "updatedAt" to FieldValue.serverTimestamp()
+        )
+      ).await()
+
+      val remaining = chat?.memberIds?.filter { it != currentUid } ?: emptyList()
+      val sysMsgId = "msg_${System.currentTimeMillis()}_${(1000..9999).random()}"
+      val sysMsgPayload = mapOf(
+        "messageId" to sysMsgId,
+        "chatId" to chatId,
+        "senderId" to currentUid,
+        "senderName" to currentUserName,
+        "text" to "🚪 $currentUserName покинул(а) группу",
+        "memberIds" to remaining,
+        "createdAt" to FieldValue.serverTimestamp()
+      )
+      try {
+        chatRef.collection("messages").document(sysMsgId).set(sysMsgPayload).await()
+      } catch (_: Exception) {}
+
+      _chats.value = _chats.value.filter { it.id != chatId }
+      messagesMap.remove(chatId)
+      true
+    } catch (e: Exception) {
+      Log.e("FirebaseChatService", "leaveGroup error: ${e.message}")
+      false
     }
   }
 

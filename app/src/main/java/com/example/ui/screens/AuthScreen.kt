@@ -161,37 +161,31 @@ fun AuthScreen(
         modifier = Modifier
           .size(80.dp)
           .clip(CircleShape)
-          .background(
-            Brush.linearGradient(
-              listOf(MaxoCyanPrimary, MaxoBlueAccent)
-            )
-          )
-          .border(2.dp, MaxoCyanPrimary.copy(alpha = 0.8f), CircleShape),
+          .background(MaterialTheme.colorScheme.primaryContainer),
         contentAlignment = Alignment.Center
       ) {
         Icon(
           imageVector = Icons.Default.Send,
           contentDescription = "MaxoGram Logo",
-          tint = Color.White,
+          tint = MaterialTheme.colorScheme.onPrimaryContainer,
           modifier = Modifier
             .size(40.dp)
             .padding(end = 3.dp, bottom = 2.dp)
         )
       }
 
-      Spacer(modifier = Modifier.height(12.dp))
+      Spacer(modifier = Modifier.height(14.dp))
 
       Text(
         text = "MaxoGram",
-        fontSize = 30.sp,
-        fontWeight = FontWeight.ExtraBold,
-        letterSpacing = 0.5.sp,
+        style = MaterialTheme.typography.headlineLarge,
+        fontWeight = FontWeight.Bold,
         color = MaterialTheme.colorScheme.onBackground
       )
 
       Text(
         text = "Быстрый облачный мессенджер нового поколения",
-        fontSize = 13.sp,
+        style = MaterialTheme.typography.bodyMedium,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
         textAlign = TextAlign.Center,
         modifier = Modifier.padding(top = 2.dp, bottom = 18.dp)
@@ -200,17 +194,17 @@ fun AuthScreen(
       // Main Auth Method Tabs: [Логин и пароль] | [Через Google]
       TabRow(
         selectedTabIndex = selectedMainTab,
-        containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
-        contentColor = MaxoCyanPrimary,
+        containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = MaterialTheme.colorScheme.primary,
         indicator = { tabPositions ->
           TabRowDefaults.SecondaryIndicator(
             modifier = Modifier.tabIndicatorOffset(tabPositions[selectedMainTab]),
-            color = MaxoCyanPrimary
+            color = MaterialTheme.colorScheme.primary
           )
         },
         modifier = Modifier
           .fillMaxWidth()
-          .clip(RoundedCornerShape(12.dp))
+          .clip(RoundedCornerShape(16.dp))
       ) {
         Tab(
           selected = selectedMainTab == 0,
@@ -224,14 +218,14 @@ fun AuthScreen(
                 imageVector = Icons.Default.Key,
                 contentDescription = null,
                 modifier = Modifier.size(16.dp),
-                tint = if (selectedMainTab == 0) MaxoCyanPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                tint = if (selectedMainTab == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
               )
               Spacer(modifier = Modifier.width(6.dp))
               Text(
                 "Логин и пароль",
                 fontWeight = if (selectedMainTab == 0) FontWeight.Bold else FontWeight.Normal,
                 fontSize = 13.sp,
-                color = if (selectedMainTab == 0) MaxoCyanPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                color = if (selectedMainTab == 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
               )
             }
           },
@@ -249,14 +243,14 @@ fun AuthScreen(
                 imageVector = Icons.Default.Shield,
                 contentDescription = null,
                 modifier = Modifier.size(16.dp),
-                tint = if (selectedMainTab == 1) MaxoCyanPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                tint = if (selectedMainTab == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
               )
               Spacer(modifier = Modifier.width(6.dp))
               Text(
                 "Через Google",
                 fontWeight = if (selectedMainTab == 1) FontWeight.Bold else FontWeight.Normal,
                 fontSize = 13.sp,
-                color = if (selectedMainTab == 1) MaxoCyanPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                color = if (selectedMainTab == 1) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
               )
             }
           },
@@ -272,21 +266,21 @@ fun AuthScreen(
         Row(
           modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .padding(4.dp),
           horizontalArrangement = Arrangement.spacedBy(4.dp)
         ) {
           Box(
             modifier = Modifier
               .weight(1f)
-              .clip(RoundedCornerShape(8.dp))
-              .background(if (!isRegisterMode) MaxoCyanPrimary else Color.Transparent)
+              .clip(RoundedCornerShape(12.dp))
+              .background(if (!isRegisterMode) MaterialTheme.colorScheme.primary else Color.Transparent)
               .clickable {
                 isRegisterMode = false
                 errorMessage = null
               }
-              .padding(vertical = 8.dp)
+              .padding(vertical = 10.dp)
               .testTag("sub_tab_login"),
             contentAlignment = Alignment.Center
           ) {
@@ -294,20 +288,20 @@ fun AuthScreen(
               text = "Вход",
               fontWeight = FontWeight.Bold,
               fontSize = 13.sp,
-              color = if (!isRegisterMode) Color.Black else MaterialTheme.colorScheme.onSurfaceVariant
+              color = if (!isRegisterMode) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
             )
           }
 
           Box(
             modifier = Modifier
               .weight(1f)
-              .clip(RoundedCornerShape(8.dp))
-              .background(if (isRegisterMode) MaxoCyanPrimary else Color.Transparent)
+              .clip(RoundedCornerShape(12.dp))
+              .background(if (isRegisterMode) MaterialTheme.colorScheme.primary else Color.Transparent)
               .clickable {
                 isRegisterMode = true
                 errorMessage = null
               }
-              .padding(vertical = 8.dp)
+              .padding(vertical = 10.dp)
               .testTag("sub_tab_register"),
             contentAlignment = Alignment.Center
           ) {
@@ -315,7 +309,7 @@ fun AuthScreen(
               text = "Регистрация",
               fontWeight = FontWeight.Bold,
               fontSize = 13.sp,
-              color = if (isRegisterMode) Color.Black else MaterialTheme.colorScheme.onSurfaceVariant
+              color = if (isRegisterMode) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
             )
           }
         }
@@ -326,11 +320,10 @@ fun AuthScreen(
         Box(
           modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-            .border(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.2f), RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
             .clickable { showServerConfig = !showServerConfig }
-            .padding(horizontal = 12.dp, vertical = 10.dp)
+            .padding(horizontal = 14.dp, vertical = 10.dp)
         ) {
           Row(
             modifier = Modifier.fillMaxWidth(),
@@ -341,7 +334,7 @@ fun AuthScreen(
               Icon(
                 imageVector = if (backendMode == BackendMode.FIREBASE_CLOUD) Icons.Default.Cloud else Icons.Default.Dns,
                 contentDescription = null,
-                tint = MaxoCyanPrimary,
+                tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.size(18.dp)
               )
               Spacer(modifier = Modifier.width(8.dp))
@@ -350,15 +343,15 @@ fun AuthScreen(
                   "Сервер: Google Cloud Firebase"
                 else
                   "Сервер: MaxoGram WebSocket (${chatService.serverIp.value})",
-                fontSize = 12.sp,
+                style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.Medium,
                 color = MaterialTheme.colorScheme.onSurface
               )
             }
             Text(
               text = if (showServerConfig) "▲ Скрыть" else "▼ Изменить",
-              fontSize = 11.sp,
-              color = MaxoCyanPrimary,
+              style = MaterialTheme.typography.labelSmall,
+              color = MaterialTheme.colorScheme.primary,
               fontWeight = FontWeight.Bold
             )
           }
@@ -451,17 +444,19 @@ fun AuthScreen(
           label = { Text("Юзернейм (@username)") },
           placeholder = { Text("zolo") },
           leadingIcon = {
-            Icon(Icons.Default.AccountCircle, contentDescription = null, tint = MaxoCyanPrimary)
+            Icon(Icons.Default.AccountCircle, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
           },
-          prefix = { Text("@", color = MaxoCyanPrimary, fontWeight = FontWeight.Bold) },
+          prefix = { Text("@", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold) },
           singleLine = true,
-          shape = RoundedCornerShape(14.dp),
+          shape = RoundedCornerShape(20.dp),
           modifier = Modifier
             .fillMaxWidth()
             .testTag("username_input"),
           colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = MaxoCyanPrimary,
-            unfocusedBorderColor = MaterialTheme.colorScheme.outline
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh
           )
         )
 
@@ -475,16 +470,18 @@ fun AuthScreen(
               label = { Text("Ваше имя (как вас увидят другие)") },
               placeholder = { Text("Иван") },
               leadingIcon = {
-                Icon(Icons.Default.Person, contentDescription = null, tint = MaxoCyanPrimary)
+                Icon(Icons.Default.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
               },
               singleLine = true,
-              shape = RoundedCornerShape(14.dp),
+              shape = RoundedCornerShape(20.dp),
               modifier = Modifier
                 .fillMaxWidth()
                 .testTag("display_name_input"),
               colors = OutlinedTextFieldDefaults.colors(
-                focusedBorderColor = MaxoCyanPrimary,
-                unfocusedBorderColor = MaterialTheme.colorScheme.outline
+                focusedBorderColor = MaterialTheme.colorScheme.primary,
+                unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+                focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+                unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh
               )
             )
           }
@@ -498,26 +495,29 @@ fun AuthScreen(
           onValueChange = { passwordInput = it },
           label = { Text("Пароль") },
           leadingIcon = {
-            Icon(Icons.Default.Lock, contentDescription = null, tint = MaxoCyanPrimary)
+            Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
           },
           trailingIcon = {
             IconButton(onClick = { isPasswordVisible = !isPasswordVisible }) {
               Icon(
                 imageVector = if (isPasswordVisible) Icons.Default.VisibilityOff else Icons.Default.Visibility,
-                contentDescription = if (isPasswordVisible) "Скрыть пароль" else "Показать пароль"
+                contentDescription = if (isPasswordVisible) "Скрыть пароль" else "Показать пароль",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant
               )
             }
           },
           visualTransformation = if (isPasswordVisible) VisualTransformation.None else PasswordVisualTransformation(),
           keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
           singleLine = true,
-          shape = RoundedCornerShape(14.dp),
+          shape = RoundedCornerShape(20.dp),
           modifier = Modifier
             .fillMaxWidth()
             .testTag("password_input"),
           colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = MaxoCyanPrimary,
-            unfocusedBorderColor = MaterialTheme.colorScheme.outline
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f),
+            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh
           )
         )
 
@@ -592,20 +592,20 @@ fun AuthScreen(
             }
           },
           enabled = !isLoading,
-          shape = RoundedCornerShape(16.dp),
+          shape = RoundedCornerShape(28.dp),
           modifier = Modifier
             .fillMaxWidth()
             .height(54.dp)
             .testTag(if (isRegisterMode) "submit_register_button" else "submit_login_button"),
           colors = ButtonDefaults.buttonColors(
-            containerColor = MaxoCyanPrimary,
-            contentColor = Color.Black
+            containerColor = MaterialTheme.colorScheme.primary,
+            contentColor = MaterialTheme.colorScheme.onPrimary
           )
         ) {
           if (isLoading) {
             CircularProgressIndicator(
               modifier = Modifier.size(24.dp),
-              color = Color.Black,
+              color = MaterialTheme.colorScheme.onPrimary,
               strokeWidth = 2.dp
             )
           } else {
@@ -723,20 +723,20 @@ fun AuthScreen(
             )
           },
           enabled = !isLoading,
-          shape = RoundedCornerShape(16.dp),
+          shape = RoundedCornerShape(28.dp),
           modifier = Modifier
             .fillMaxWidth()
             .height(56.dp)
             .testTag("google_sign_in_button"),
           colors = ButtonDefaults.buttonColors(
-            containerColor = MaxoCyanPrimary,
-            contentColor = Color.Black
+            containerColor = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer
           )
         ) {
           if (isLoading) {
             CircularProgressIndicator(
               modifier = Modifier.size(24.dp),
-              color = Color.Black,
+              color = MaterialTheme.colorScheme.onPrimaryContainer,
               strokeWidth = 2.dp
             )
           } else {
@@ -747,7 +747,7 @@ fun AuthScreen(
               Icon(
                 imageVector = Icons.Default.Shield,
                 contentDescription = null,
-                tint = Color.Black,
+                tint = MaterialTheme.colorScheme.onPrimaryContainer,
                 modifier = Modifier.size(22.dp)
               )
               Spacer(modifier = Modifier.width(10.dp))

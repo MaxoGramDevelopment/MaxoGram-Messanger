@@ -20,6 +20,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -33,7 +35,24 @@ import androidx.compose.material.icons.filled.Groups
 import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import android.Manifest
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.net.Uri
+import com.example.data.settings.AppDesignStyle
+import com.example.ui.theme.LocalAppDesignStyle
+import android.os.Build
+import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
+import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.example.ui.components.AvatarPickerBottomSheet
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -47,6 +66,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -81,6 +101,7 @@ import kotlinx.coroutines.launch
 fun ChatListScreen(
   chatService: ChatService,
   onOpenChat: (chatId: String, recipientId: String?, recipientName: String?, recipientUsername: String?) -> Unit,
+  onOpenSettings: () -> Unit = {},
   onLogout: () -> Unit,
   modifier: Modifier = Modifier
 ) {
@@ -98,6 +119,41 @@ fun ChatListScreen(
   var showProfileDialog by remember { mutableStateOf(false) }
   var showServerSettingsDialog by remember { mutableStateOf(false) }
   var showAvatarPicker by remember { mutableStateOf(false) }
+  var chatToDelete by remember { mutableStateOf<ChatDialog?>(null) }
+
+  val context = LocalContext.current
+  var hasAudioPermission by remember {
+    mutableStateOf(
+      ContextCompat.checkSelfPermission(
+        context,
+        Manifest.permission.RECORD_AUDIO
+      ) == PackageManager.PERMISSION_GRANTED
+    )
+  }
+  var hasOverlayPermission by remember {
+    mutableStateOf(
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        Settings.canDrawOverlays(context)
+      } else true
+    )
+  }
+
+  val audioPermissionLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.RequestPermission()
+  ) { isGranted ->
+    hasAudioPermission = isGranted
+  }
+
+  LifecycleResumeEffect(Unit) {
+    hasAudioPermission = ContextCompat.checkSelfPermission(
+      context,
+      Manifest.permission.RECORD_AUDIO
+    ) == PackageManager.PERMISSION_GRANTED
+    hasOverlayPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+      Settings.canDrawOverlays(context)
+    } else true
+    onPauseOrDispose {}
+  }
 
   // New Chat Search State
   var userSearchQuery by remember { mutableStateOf("") }
@@ -125,6 +181,8 @@ fun ChatListScreen(
     else -> "● нет связи"
   }
 
+  val isLegacyDesign = LocalAppDesignStyle.current == AppDesignStyle.LEGACY_2014
+
   Scaffold(
     modifier = modifier.fillMaxSize(),
     floatingActionButton = {
@@ -139,11 +197,11 @@ fun ChatListScreen(
             chatService.searchUsers("")
             showNewGroupDialog = true
           },
-          containerColor = MaterialTheme.colorScheme.surfaceVariant,
-          contentColor = MaxoCyanPrimary,
-          shape = CircleShape,
+          containerColor = if (isLegacyDesign) MaterialTheme.colorScheme.secondary else MaterialTheme.colorScheme.surfaceContainerHigh,
+          contentColor = if (isLegacyDesign) MaterialTheme.colorScheme.onSecondary else MaterialTheme.colorScheme.primary,
+          shape = if (isLegacyDesign) CircleShape else RoundedCornerShape(16.dp),
           modifier = Modifier
-            .size(46.dp)
+            .size(48.dp)
             .testTag("new_group_fab")
         ) {
           Icon(Icons.Default.GroupAdd, contentDescription = "Создать группу", modifier = Modifier.size(22.dp))
@@ -155,9 +213,9 @@ fun ChatListScreen(
             chatService.searchUsers("")
             showNewChatDialog = true
           },
-          containerColor = MaxoCyanPrimary,
-          contentColor = Color.Black,
-          shape = CircleShape,
+          containerColor = MaterialTheme.colorScheme.primary,
+          contentColor = MaterialTheme.colorScheme.onPrimary,
+          shape = if (isLegacyDesign) CircleShape else RoundedCornerShape(20.dp),
           modifier = Modifier.testTag("new_chat_fab")
         ) {
           Icon(Icons.Default.Edit, contentDescription = "Создать новый диалог")
@@ -183,31 +241,30 @@ fun ChatListScreen(
           Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
               text = "MaxoGram",
-              fontSize = 26.sp,
-              fontWeight = FontWeight.ExtraBold,
-              letterSpacing = (-0.5).sp,
+              style = MaterialTheme.typography.headlineMedium,
+              fontWeight = FontWeight.Bold,
               color = MaterialTheme.colorScheme.onBackground
             )
             Spacer(modifier = Modifier.width(8.dp))
             // Status pill с кликом для смены IP
             Box(
               modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
+                .clip(RoundedCornerShape(12.dp))
                 .background(statusColor.copy(alpha = 0.15f))
                 .clickable { showServerSettingsDialog = true }
-                .padding(horizontal = 7.dp, vertical = 3.dp)
+                .padding(horizontal = 8.dp, vertical = 4.dp)
             ) {
               Text(
                 text = statusText,
                 color = statusColor,
-                fontSize = 11.sp,
+                style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold
               )
             }
           }
           Text(
             text = "Облако Google Cloud • Онлайн 24/7",
-            fontSize = 11.sp,
+            style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
           )
         }
@@ -227,10 +284,21 @@ fun ChatListScreen(
             )
           }
 
+          IconButton(
+            onClick = onOpenSettings,
+            modifier = Modifier.testTag("settings_button")
+          ) {
+            Icon(
+              imageVector = Icons.Default.Settings,
+              contentDescription = "Настройки",
+              tint = MaterialTheme.colorScheme.onSurface
+            )
+          }
+
           currentUser?.let { user ->
             Box(
               modifier = Modifier
-                .clickable { showProfileDialog = true }
+                .clickable { onOpenSettings() }
                 .padding(4.dp)
             ) {
               MaxoAvatar(
@@ -251,11 +319,11 @@ fun ChatListScreen(
         OutlinedTextField(
           value = searchQuery,
           onValueChange = { searchQuery = it },
-          placeholder = { Text("Поиск по диалогам...") },
+          placeholder = { Text("Поиск по диалогам...", style = MaterialTheme.typography.bodyMedium) },
           singleLine = true,
-          shape = RoundedCornerShape(14.dp),
+          shape = RoundedCornerShape(28.dp),
           leadingIcon = {
-            Icon(Icons.Default.Search, contentDescription = null, tint = MaxoCyanPrimary)
+            Icon(Icons.Default.Search, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
           },
           trailingIcon = {
             if (searchQuery.isNotEmpty()) {
@@ -266,13 +334,137 @@ fun ChatListScreen(
           },
           modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 18.dp, vertical = 6.dp)
+            .padding(horizontal = 16.dp, vertical = 6.dp)
             .testTag("search_input"),
           colors = OutlinedTextFieldDefaults.colors(
-            focusedBorderColor = MaxoCyanPrimary,
-            unfocusedBorderColor = MaterialTheme.colorScheme.outline
+            focusedBorderColor = MaterialTheme.colorScheme.primary,
+            unfocusedBorderColor = Color.Transparent,
+            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh
           )
         )
+      }
+
+      // Permission Prompts for Calls & Overlays
+      if (!hasOverlayPermission && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        Card(
+          shape = RoundedCornerShape(20.dp),
+          colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+          ),
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+        ) {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Icon(
+              imageVector = Icons.Default.Phone,
+              contentDescription = null,
+              tint = MaterialTheme.colorScheme.primary,
+              modifier = Modifier.size(26.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "Звонки поверх приложений",
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurface
+              )
+              Text(
+                text = "Включите для приема входящих звонков на экране блокировки",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Button(
+              onClick = {
+                try {
+                  val intent = Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    Uri.parse("package:${context.packageName}")
+                  )
+                  context.startActivity(intent)
+                } catch (_: Exception) {
+                  try {
+                    val intent = Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)
+                    context.startActivity(intent)
+                  } catch (_: Exception) {}
+                }
+              },
+              shape = RoundedCornerShape(16.dp),
+              contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+              colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+              ),
+              modifier = Modifier.testTag("enable_overlay_permission_button")
+            ) {
+              Text("Включить", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+          }
+        }
+      }
+
+      if (!hasAudioPermission) {
+        Card(
+          shape = RoundedCornerShape(20.dp),
+          colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceContainerHigh
+          ),
+          modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+        ) {
+          Row(
+            modifier = Modifier
+              .fillMaxWidth()
+              .padding(14.dp),
+            verticalAlignment = Alignment.CenterVertically
+          ) {
+            Icon(
+              imageVector = Icons.Default.Mic,
+              contentDescription = null,
+              tint = Color(0xFFEF4444),
+              modifier = Modifier.size(26.dp)
+            )
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+              Text(
+                text = "Доступ к микрофону",
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+                color = MaterialTheme.colorScheme.onSurface
+              )
+              Text(
+                text = "Разрешите микрофон для передачи голоса в звонках",
+                fontSize = 11.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+              )
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Button(
+              onClick = {
+                audioPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+              },
+              shape = RoundedCornerShape(16.dp),
+              contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+              colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.primary,
+                contentColor = MaterialTheme.colorScheme.onPrimary
+              ),
+              modifier = Modifier.testTag("enable_audio_permission_button")
+            ) {
+              Text("Разрешить", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+          }
+        }
       }
 
       // Online contacts strip
@@ -381,7 +573,11 @@ fun ChatListScreen(
               onClick = {
                 chatService.markAsRead(chat.id)
                 onOpenChat(chat.id, chat.partnerId, chat.name, chat.participantUsername)
-              }
+              },
+              onLongClick = {
+                chatToDelete = chat
+              },
+              modifier = Modifier.animateItem()
             )
           }
         }
@@ -490,7 +686,7 @@ fun ChatListScreen(
                   }
 
                   Text(
-                    text = if (user.isOnline) "в сети" else "оффлайн",
+                    text = if (user.isOnline) "в сети" else com.example.ui.util.AppStrings.formatLastSeen(user.lastSeenMillis, com.example.data.settings.AppLanguage.RU),
                     fontSize = 11.sp,
                     color = if (user.isOnline) MaxoOnlineGreen else MaterialTheme.colorScheme.onSurfaceVariant
                   )
@@ -834,113 +1030,195 @@ fun ChatListScreen(
     }
   }
 
+  // DELETE CHAT CONFIRMATION DIALOG
+  if (chatToDelete != null) {
+    val chat = chatToDelete!!
+    val isCreator = !chat.isGroup || chat.creatorId == currentUser?.id || (chat.creatorId.isBlank() && chat.memberIds.firstOrNull() == currentUser?.id)
+    AlertDialog(
+      onDismissRequest = { chatToDelete = null },
+      shape = RoundedCornerShape(28.dp),
+      containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+      title = {
+        Text(
+          if (chat.isGroup) {
+            if (isCreator) "Удалить группу для всех?" else "Покинуть группу?"
+          } else "Удалить чат?",
+          fontWeight = FontWeight.Bold
+        )
+      },
+      text = {
+        Text(
+          if (chat.isGroup) {
+            if (isCreator) {
+              "Вы создатель группы «${chat.name}». Удалить группу и всю историю сообщений для всех участников?"
+            } else {
+              "Вы действительно хотите покинуть группу «${chat.name}»? (Удалить группу для всех может только создатель)."
+            }
+          } else {
+            "Вы действительно хотите удалить «${chat.name}»? Чат и вся история сообщений будут удалены для всех участников."
+          }
+        )
+      },
+      confirmButton = {
+        Button(
+          onClick = {
+            chatToDelete = null
+            scope.launch {
+              if (chat.isGroup && !isCreator) {
+                chatService.leaveGroup(chat.id)
+              } else {
+                chatService.deleteChat(chat.id)
+              }
+            }
+          },
+          shape = RoundedCornerShape(20.dp),
+          colors = ButtonDefaults.buttonColors(
+            containerColor = MaterialTheme.colorScheme.error,
+            contentColor = MaterialTheme.colorScheme.onError
+          ),
+          modifier = Modifier.testTag("confirm_delete_chat_dialog_button")
+        ) {
+          Text(if (chat.isGroup && !isCreator) "Покинуть" else "Удалить", fontWeight = FontWeight.Bold)
+        }
+      },
+      dismissButton = {
+        TextButton(
+          onClick = { chatToDelete = null },
+          modifier = Modifier.testTag("cancel_delete_chat_dialog_button")
+        ) {
+          Text("Отмена")
+        }
+      }
+    )
+  }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatItemRow(
   chat: ChatDialog,
-  onClick: () -> Unit
+  onClick: () -> Unit,
+  onLongClick: (() -> Unit)? = null,
+  modifier: Modifier = Modifier
 ) {
-  Row(
-    modifier = Modifier
+  val isLegacy = LocalAppDesignStyle.current == AppDesignStyle.LEGACY_2014
+  val cardShape = if (isLegacy) RoundedCornerShape(4.dp) else RoundedCornerShape(20.dp)
+  val containerColor = if (isLegacy) {
+    if (chat.unreadCount > 0) MaterialTheme.colorScheme.surfaceVariant else MaterialTheme.colorScheme.surface
+  } else {
+    if (chat.unreadCount > 0) MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f) else MaterialTheme.colorScheme.surfaceContainerLow
+  }
+
+  Surface(
+    shape = cardShape,
+    color = containerColor,
+    modifier = modifier
       .fillMaxWidth()
-      .clickable(onClick = onClick)
-      .padding(horizontal = 16.dp, vertical = 11.dp)
-      .testTag("chat_item_${chat.id}"),
-    verticalAlignment = Alignment.CenterVertically
+      .padding(horizontal = 8.dp, vertical = 3.dp)
+      .combinedClickable(
+        onClick = onClick,
+        onLongClick = onLongClick
+      )
+      .testTag("chat_item_${chat.id}")
   ) {
-    MaxoAvatar(
-      name = chat.name,
-      colorHex = chat.avatarColorHex,
-      size = 52.dp,
-      isOnline = chat.isOnline,
-      avatarType = chat.avatarType,
-      avatarValue = chat.avatarValue
-    )
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(horizontal = 14.dp, vertical = 12.dp),
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      MaxoAvatar(
+        name = chat.name,
+        colorHex = chat.avatarColorHex,
+        size = 52.dp,
+        isOnline = chat.isOnline,
+        avatarType = chat.avatarType,
+        avatarValue = chat.avatarValue
+      )
 
-    Spacer(modifier = Modifier.width(14.dp))
+      Spacer(modifier = Modifier.width(14.dp))
 
-    Column(modifier = Modifier.weight(1f)) {
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-      ) {
+      Column(modifier = Modifier.weight(1f)) {
         Row(
-          verticalAlignment = Alignment.CenterVertically,
-          modifier = Modifier.weight(1f, fill = false)
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
         ) {
-          if (chat.isGroup) {
-            Icon(
-              imageVector = Icons.Default.Groups,
-              contentDescription = "Группа",
-              tint = MaxoCyanPrimary,
-              modifier = Modifier
-                .size(17.dp)
-                .padding(end = 4.dp)
+          Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.weight(1f, fill = false)
+          ) {
+            if (chat.isGroup) {
+              Icon(
+                imageVector = Icons.Default.Groups,
+                contentDescription = "Группа",
+                tint = MaterialTheme.colorScheme.primary,
+                modifier = Modifier
+                  .size(18.dp)
+                  .padding(end = 4.dp)
+              )
+            }
+            Text(
+              text = chat.name,
+              style = MaterialTheme.typography.titleMedium,
+              color = MaterialTheme.colorScheme.onSurface,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis
             )
           }
-          Text(
-            text = chat.name,
-            fontSize = 16.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-          )
-        }
 
-        Spacer(modifier = Modifier.width(8.dp))
-
-        Row(verticalAlignment = Alignment.CenterVertically) {
-          if (chat.isPinned) {
-            Icon(
-              imageVector = Icons.Default.PushPin,
-              contentDescription = "Закреплено",
-              tint = MaterialTheme.colorScheme.onSurfaceVariant,
-              modifier = Modifier
-                .size(14.dp)
-                .padding(end = 4.dp)
-            )
-          }
-          Text(
-            text = chat.lastMessageTime,
-            fontSize = 12.sp,
-            color = if (chat.unreadCount > 0) MaxoCyanPrimary else MaterialTheme.colorScheme.onSurfaceVariant
-          )
-        }
-      }
-
-      Spacer(modifier = Modifier.height(4.dp))
-
-      Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-      ) {
-        if (chat.isTyping) {
-          Text(
-            text = "печатает...",
-            fontSize = 14.sp,
-            color = MaxoCyanPrimary,
-            fontWeight = FontWeight.Medium,
-            maxLines = 1,
-            modifier = Modifier.weight(1f)
-          )
-        } else {
-          Text(
-            text = chat.lastMessage,
-            fontSize = 14.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier.weight(1f)
-          )
-        }
-
-        if (chat.unreadCount > 0) {
           Spacer(modifier = Modifier.width(8.dp))
-          MaxoUnreadBadge(count = chat.unreadCount)
+
+          Row(verticalAlignment = Alignment.CenterVertically) {
+            if (chat.isPinned) {
+              Icon(
+                imageVector = Icons.Default.PushPin,
+                contentDescription = "Закреплено",
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                  .size(14.dp)
+                  .padding(end = 4.dp)
+              )
+            }
+            Text(
+              text = chat.lastMessageTime,
+              style = MaterialTheme.typography.labelSmall,
+              color = if (chat.unreadCount > 0) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            )
+          }
+        }
+
+        Spacer(modifier = Modifier.height(3.dp))
+
+        Row(
+          modifier = Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          if (chat.isTyping) {
+            Text(
+              text = "печатает...",
+              style = MaterialTheme.typography.bodyMedium,
+              color = MaterialTheme.colorScheme.primary,
+              fontWeight = FontWeight.Medium,
+              maxLines = 1,
+              modifier = Modifier.weight(1f)
+            )
+          } else {
+            Text(
+              text = chat.lastMessage,
+              style = MaterialTheme.typography.bodyMedium,
+              color = MaterialTheme.colorScheme.onSurfaceVariant,
+              maxLines = 1,
+              overflow = TextOverflow.Ellipsis,
+              modifier = Modifier.weight(1f)
+            )
+          }
+
+          if (chat.unreadCount > 0) {
+            Spacer(modifier = Modifier.width(8.dp))
+            MaxoUnreadBadge(count = chat.unreadCount)
+          }
         }
       }
     }

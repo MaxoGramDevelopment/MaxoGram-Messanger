@@ -6,6 +6,9 @@ import com.example.data.model.ChatMessage
 import com.example.data.model.ConnectionStatus
 import com.example.data.model.MediaType
 import com.example.data.model.User
+import com.example.data.model.CallSession
+import com.example.data.model.VoiceParticipant
+import com.example.util.CallAudioManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +29,15 @@ class AppChatService(
 
   val firebaseService = FirebaseChatService(context, scope)
   val webSocketService = RealWebSocketChatService(context, scope)
+
+  override val callAudioManager: CallAudioManager
+    get() = activeService.callAudioManager
+
+  private val _currentCall = MutableStateFlow<CallSession?>(null)
+  override val currentCall: StateFlow<CallSession?> = _currentCall.asStateFlow()
+
+  private val _activeVoiceChannelChatId = MutableStateFlow<String?>(null)
+  override val activeVoiceChannelChatId: StateFlow<String?> = _activeVoiceChannelChatId.asStateFlow()
 
   private val _backendMode = MutableStateFlow(
     if (prefs.getString("backend_mode", "firebase") == "websocket") {
@@ -99,6 +111,20 @@ class AppChatService(
     }
     scope.launch {
       webSocketService.lastErrorMessage.collect { if (_backendMode.value == BackendMode.WEBSOCKET_SERVER) _lastErrorMessage.value = it }
+    }
+
+    scope.launch {
+      firebaseService.currentCall.collect { if (_backendMode.value == BackendMode.FIREBASE_CLOUD) _currentCall.value = it }
+    }
+    scope.launch {
+      webSocketService.currentCall.collect { if (_backendMode.value == BackendMode.WEBSOCKET_SERVER) _currentCall.value = it }
+    }
+
+    scope.launch {
+      firebaseService.activeVoiceChannelChatId.collect { if (_backendMode.value == BackendMode.FIREBASE_CLOUD) _activeVoiceChannelChatId.value = it }
+    }
+    scope.launch {
+      webSocketService.activeVoiceChannelChatId.collect { if (_backendMode.value == BackendMode.WEBSOCKET_SERVER) _activeVoiceChannelChatId.value = it }
     }
   }
 
@@ -236,6 +262,12 @@ class AppChatService(
 
   override fun markAsRead(chatId: String) {
     activeService.markAsRead(chatId)
+    _chats.value = activeService.chats.value
+  }
+
+  override fun setOnlinePresence(isOnline: Boolean) {
+    activeService.setOnlinePresence(isOnline)
+    _currentUser.value = activeService.currentUser.value
   }
 
   override suspend fun updateAvatar(type: String, value: String, colorHex: Long?): Result<Unit> {
@@ -246,11 +278,124 @@ class AppChatService(
     return res
   }
 
-  override suspend fun updateProfile(username: String, displayName: String, avatarType: String, avatarValue: String): Result<Unit> {
-    val res = activeService.updateProfile(username, displayName, avatarType, avatarValue)
+  override suspend fun updateProfile(
+    username: String,
+    displayName: String,
+    avatarType: String,
+    avatarValue: String,
+    bio: String,
+    birthDate: String
+  ): Result<Unit> {
+    val res = activeService.updateProfile(username, displayName, avatarType, avatarValue, bio, birthDate)
     if (res.isSuccess) {
       syncActiveServiceState()
     }
+    return res
+  }
+
+  override fun startPrivateCall(
+    chatId: String,
+    recipientId: String,
+    recipientName: String,
+    recipientAvatarType: String,
+    recipientAvatarValue: String,
+    recipientAvatarColor: Long
+  ) {
+    activeService.startPrivateCall(
+      chatId = chatId,
+      recipientId = recipientId,
+      recipientName = recipientName,
+      recipientAvatarType = recipientAvatarType,
+      recipientAvatarValue = recipientAvatarValue,
+      recipientAvatarColor = recipientAvatarColor
+    )
+  }
+
+  override fun acceptCall(callId: String) {
+    activeService.acceptCall(callId)
+  }
+
+  override fun rejectCall(callId: String) {
+    activeService.rejectCall(callId)
+  }
+
+  override fun endCall(callId: String) {
+    activeService.endCall(callId)
+  }
+
+  override fun toggleCallMute() {
+    activeService.toggleCallMute()
+  }
+
+  override fun toggleCallSpeaker() {
+    activeService.toggleCallSpeaker()
+  }
+
+  override fun getVoiceParticipantsFlow(chatId: String): StateFlow<List<VoiceParticipant>> {
+    return activeService.getVoiceParticipantsFlow(chatId)
+  }
+
+  override fun joinGroupVoice(chatId: String) {
+    activeService.joinGroupVoice(chatId)
+  }
+
+  override fun leaveGroupVoice(chatId: String) {
+    activeService.leaveGroupVoice(chatId)
+  }
+
+  override fun toggleVoiceMute() {
+    activeService.toggleVoiceMute()
+  }
+
+  override fun toggleVoiceDeafen() {
+    activeService.toggleVoiceDeafen()
+  }
+
+  override fun updateSpeakingState(chatId: String, isSpeaking: Boolean) {
+    activeService.updateSpeakingState(chatId, isSpeaking)
+  }
+
+  override suspend fun deleteMessage(chatId: String, messageId: String): Boolean {
+    return activeService.deleteMessage(chatId, messageId)
+  }
+
+  override suspend fun deleteMessageForMe(chatId: String, messageId: String): Boolean {
+    return activeService.deleteMessageForMe(chatId, messageId)
+  }
+
+  override suspend fun deleteChat(chatId: String): Boolean {
+    val res = activeService.deleteChat(chatId)
+    _chats.value = activeService.chats.value
+    return res
+  }
+
+  override suspend fun addParticipantsToGroup(chatId: String, newMemberIds: List<String>): Boolean {
+    val res = activeService.addParticipantsToGroup(chatId, newMemberIds)
+    _chats.value = activeService.chats.value
+    return res
+  }
+
+  override suspend fun removeParticipantFromGroup(chatId: String, memberId: String): Boolean {
+    val res = activeService.removeParticipantFromGroup(chatId, memberId)
+    _chats.value = activeService.chats.value
+    return res
+  }
+
+  override suspend fun blockParticipantInGroup(chatId: String, memberId: String): Boolean {
+    val res = activeService.blockParticipantInGroup(chatId, memberId)
+    _chats.value = activeService.chats.value
+    return res
+  }
+
+  override suspend fun unblockParticipantInGroup(chatId: String, memberId: String): Boolean {
+    val res = activeService.unblockParticipantInGroup(chatId, memberId)
+    _chats.value = activeService.chats.value
+    return res
+  }
+
+  override suspend fun leaveGroup(chatId: String): Boolean {
+    val res = activeService.leaveGroup(chatId)
+    _chats.value = activeService.chats.value
     return res
   }
 }

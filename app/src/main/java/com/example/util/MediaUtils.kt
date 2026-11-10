@@ -68,7 +68,7 @@ object MediaUtils {
       val mediaDir = File(context.filesDir, "maxogram_media").apply { mkdirs() }
       val extension = when (mediaType) {
         MediaType.PHOTO -> "jpg"
-        MediaType.VIDEO -> "mp4"
+        MediaType.VIDEO, MediaType.VIDEO_NOTE -> "mp4"
         else -> "bin"
       }
       val targetFile = File(mediaDir, "media_${messageId}.$extension")
@@ -194,7 +194,11 @@ object MediaUtils {
     }
   }
 
-  suspend fun processVideoUri(context: Context, uri: Uri): VideoProcessResult = withContext(Dispatchers.IO) {
+  suspend fun processVideoUri(
+    context: Context,
+    uri: Uri,
+    targetMediaType: MediaType = MediaType.VIDEO
+  ): VideoProcessResult = withContext(Dispatchers.IO) {
     try {
       val retriever = MediaMetadataRetriever()
       try {
@@ -236,7 +240,8 @@ object MediaUtils {
 
       // Copy video to local permanent app media storage
       val mediaDir = File(context.filesDir, "maxogram_media").apply { mkdirs() }
-      val fileName = "video_${System.currentTimeMillis()}.mp4"
+      val prefix = if (targetMediaType == MediaType.VIDEO_NOTE) "circle_note_" else "video_"
+      val fileName = "${prefix}${System.currentTimeMillis()}.mp4"
       val localFile = File(mediaDir, fileName)
 
       context.contentResolver.openInputStream(uri)?.use { input ->
@@ -260,7 +265,7 @@ object MediaUtils {
 
       VideoProcessResult.Success(
         PreparedMediaResult(
-          mediaType = MediaType.VIDEO,
+          mediaType = targetMediaType,
           mediaUrl = mediaUrlPayload,
           mediaThumbnail = thumbBase64,
           mediaName = fileName,
@@ -274,6 +279,14 @@ object MediaUtils {
     } catch (e: Exception) {
       VideoProcessResult.Error(e.message ?: "Ошибка при обработке видео")
     }
+  }
+
+  fun createVideoNoteTempFile(context: Context): Pair<File, Uri> {
+    val mediaDir = File(context.cacheDir, "video_notes").apply { mkdirs() }
+    val file = File(mediaDir, "circle_record_${System.currentTimeMillis()}.mp4")
+    val authority = "${context.packageName}.fileprovider"
+    val uri = androidx.core.content.FileProvider.getUriForFile(context, authority, file)
+    return Pair(file, uri)
   }
 
   fun formatFileSize(bytes: Long): String {
@@ -291,5 +304,23 @@ object MediaUtils {
     val m = seconds / 60
     val s = seconds % 60
     return String.format(java.util.Locale.US, "%d:%02d", m, s)
+  }
+
+  fun getLocalIpAddress(): String {
+    try {
+      val interfaces = java.util.Collections.list(java.net.NetworkInterface.getNetworkInterfaces())
+      for (intf in interfaces) {
+        val addrs = java.util.Collections.list(intf.inetAddresses)
+        for (addr in addrs) {
+          if (!addr.isLoopbackAddress && addr is java.net.Inet4Address) {
+            val host = addr.hostAddress ?: ""
+            if (host.isNotBlank() && !host.startsWith("127.")) {
+              return host
+            }
+          }
+        }
+      }
+    } catch (_: Exception) {}
+    return "127.0.0.1"
   }
 }

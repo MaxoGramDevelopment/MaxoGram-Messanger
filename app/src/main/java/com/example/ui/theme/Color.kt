@@ -2,7 +2,56 @@ package com.example.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
-// MaxoGram Signature Colors
+// Pixel-inspired Material 3 Expressive Signature Palette
+val PixelPrimaryLight = Color(0xFF00668B)
+val PixelOnPrimaryLight = Color(0xFFFFFFFF)
+val PixelPrimaryContainerLight = Color(0xFFC2E8FF)
+val PixelOnPrimaryContainerLight = Color(0xFF001E2E)
+val PixelSecondaryLight = Color(0xFF4E616D)
+val PixelSecondaryContainerLight = Color(0xFFD1E5F3)
+val PixelOnSecondaryContainerLight = Color(0xFF0A1D28)
+val PixelTertiaryLight = Color(0xFF605A7D)
+val PixelTertiaryContainerLight = Color(0xFFE6DEFF)
+val PixelOnTertiaryContainerLight = Color(0xFF1C1736)
+
+val PixelBackgroundLight = Color(0xFFF9F9FC)
+val PixelSurfaceLight = Color(0xFFF9F9FC)
+val PixelOnSurfaceLight = Color(0xFF191C1E)
+val PixelSurfaceVariantLight = Color(0xFFDFE3E7)
+val PixelOnSurfaceVariantLight = Color(0xFF43474B)
+val PixelOutlineLight = Color(0xFF73777B)
+val PixelSurfaceContainerLowestLight = Color(0xFFFFFFFF)
+val PixelSurfaceContainerLowLight = Color(0xFFF3F4F7)
+val PixelSurfaceContainerLight = Color(0xFFEDEEF2)
+val PixelSurfaceContainerHighLight = Color(0xFFE7E8EC)
+val PixelSurfaceContainerHighestLight = Color(0xFFE1E2E6)
+
+val PixelPrimaryDark = Color(0xFF7BD0FF)
+val PixelOnPrimaryDark = Color(0xFF00354A)
+val PixelPrimaryContainerDark = Color(0xFF004D6C)
+val PixelOnPrimaryContainerDark = Color(0xFFC2E8FF)
+val PixelSecondaryDark = Color(0xFFB5C9D7)
+val PixelOnSecondaryDark = Color(0xFF20333E)
+val PixelSecondaryContainerDark = Color(0xFF374955)
+val PixelOnSecondaryContainerDark = Color(0xFFD1E5F3)
+val PixelTertiaryDark = Color(0xFFC9C1EA)
+val PixelOnTertiaryDark = Color(0xFF312C4C)
+val PixelTertiaryContainerDark = Color(0xFF484264)
+val PixelOnTertiaryContainerDark = Color(0xFFE6DEFF)
+
+val PixelBackgroundDark = Color(0xFF111416)
+val PixelSurfaceDark = Color(0xFF111416)
+val PixelOnSurfaceDark = Color(0xFFE1E2E5)
+val PixelSurfaceVariantDark = Color(0xFF43474B)
+val PixelOnSurfaceVariantDark = Color(0xFFC3C7CB)
+val PixelOutlineDark = Color(0xFF8D9195)
+val PixelSurfaceContainerLowestDark = Color(0xFF0C0F11)
+val PixelSurfaceContainerLowDark = Color(0xFF191C1E)
+val PixelSurfaceContainerDark = Color(0xFF1D2022)
+val PixelSurfaceContainerHighDark = Color(0xFF282B2D)
+val PixelSurfaceContainerHighestDark = Color(0xFF333538)
+
+// Legacy MaxoGram Tokens (Preserved for compatibility)
 val MaxoCyanPrimary = Color(0xFF00C6FF)
 val MaxoBlueAccent = Color(0xFF0072FF)
 val MaxoDarkBg = Color(0xFF0D1520)
@@ -27,3 +76,22 @@ val MaxoIncomingBubbleLight = Color(0xFFE2E8F0)
 
 val MaxoOnlineGreen = Color(0xFF10B981)
 val MaxoUnreadBadge = Color(0xFF00D2FF)
+
+// 2014 Material Design (Android 5.0 Lollipop) Color Tokens
+val Material2014Indigo500 = Color(0xFF3F51B5)
+val Material2014Indigo700 = Color(0xFF303F9F)
+val Material2014PinkA200 = Color(0xFFFF4081)
+val Material2014Teal500 = Color(0xFF009688)
+val Material2014Teal700 = Color(0xFF00796B)
+val Material2014Amber500 = Color(0xFFFFC107)
+val Material2014Grey100 = Color(0xFFF5F5F5)
+val Material2014Grey300 = Color(0xFFE0E0E0)
+val Material2014Grey800 = Color(0xFF424242)
+val Material2014Grey900 = Color(0xFF212121)
+
+// Google Signature 4-Color Accents
+val GoogleBlue = Color(0xFF4285F4)
+val GoogleRed = Color(0xFFEA4335)
+val GoogleYellow = Color(0xFFFBBC05)
+val GoogleGreen = Color(0xFF34A853)
+

@@ -98,6 +98,7 @@ fun MediaAttachmentBottomSheet(
   onDismiss: () -> Unit,
   onMediaPrepared: (PreparedMediaResult, String, Long) -> Unit,
   onPurgeServerMediaClick: suspend () -> Int,
+  onRecordVideoNote: (() -> Unit)? = null,
   modifier: Modifier = Modifier
 ) {
   val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -370,7 +371,7 @@ fun MediaAttachmentBottomSheet(
         // Selection options
         Row(
           modifier = Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.spacedBy(12.dp)
+          horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
           // Photo Button
           Card(
@@ -388,21 +389,21 @@ fun MediaAttachmentBottomSheet(
             Column(
               modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(12.dp),
               horizontalAlignment = Alignment.CenterHorizontally
             ) {
               Box(
                 modifier = Modifier
-                  .size(48.dp)
+                  .size(42.dp)
                   .clip(CircleShape)
                   .background(Brush.linearGradient(listOf(MaxoCyanPrimary, MaxoBlueAccent))),
                 contentAlignment = Alignment.Center
               ) {
-                Icon(Icons.Default.Photo, contentDescription = null, tint = Color.Black, modifier = Modifier.size(24.dp))
+                Icon(Icons.Default.Photo, contentDescription = null, tint = Color.Black, modifier = Modifier.size(22.dp))
               }
-              Spacer(modifier = Modifier.height(8.dp))
-              Text("Фото", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
-              Text("Из галереи", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+              Spacer(modifier = Modifier.height(6.dp))
+              Text("Фото", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+              Text("Галерея", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
           }
 
@@ -422,21 +423,54 @@ fun MediaAttachmentBottomSheet(
             Column(
               modifier = Modifier
                 .fillMaxWidth()
-                .padding(16.dp),
+                .padding(12.dp),
               horizontalAlignment = Alignment.CenterHorizontally
             ) {
               Box(
                 modifier = Modifier
-                  .size(48.dp)
+                  .size(42.dp)
                   .clip(CircleShape)
                   .background(Brush.linearGradient(listOf(Color(0xFF8B5CF6), Color(0xFF6D28D9)))),
                 contentAlignment = Alignment.Center
               ) {
-                Icon(Icons.Default.Videocam, contentDescription = null, tint = Color.White, modifier = Modifier.size(24.dp))
+                Icon(Icons.Default.Videocam, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
               }
-              Spacer(modifier = Modifier.height(8.dp))
-              Text("Видео", fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurface)
-              Text("Из галереи", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+              Spacer(modifier = Modifier.height(6.dp))
+              Text("Видео", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+              Text("Галерея", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+          }
+
+          // Video Note ("Кружок") Button
+          Card(
+            shape = RoundedCornerShape(14.dp),
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+            modifier = Modifier
+              .weight(1f)
+              .clickable(enabled = !isProcessing) {
+                onDismiss()
+                onRecordVideoNote?.invoke()
+              }
+              .testTag("record_video_note_button")
+          ) {
+            Column(
+              modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+              horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+              Box(
+                modifier = Modifier
+                  .size(42.dp)
+                  .clip(CircleShape)
+                  .background(Brush.linearGradient(listOf(Color(0xFF10B981), Color(0xFF059669)))),
+                contentAlignment = Alignment.Center
+              ) {
+                Icon(Icons.Default.Videocam, contentDescription = null, tint = Color.White, modifier = Modifier.size(22.dp))
+              }
+              Spacer(modifier = Modifier.height(6.dp))
+              Text("Кружок", fontWeight = FontWeight.Bold, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
+              Text("Камера", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
           }
         }
@@ -568,7 +602,11 @@ fun FullScreenMediaViewerDialog(
 
           Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(
-              text = if (message.mediaType == MediaType.PHOTO) "Фотография" else "Видеозапись",
+              text = when (message.mediaType) {
+                MediaType.PHOTO -> "Фотография"
+                MediaType.VIDEO_NOTE -> "Кружок (Видеосообщение)"
+                else -> "Видеозапись"
+              },
               color = Color.White,
               fontWeight = FontWeight.Bold,
               fontSize = 16.sp
@@ -605,6 +643,9 @@ fun FullScreenMediaViewerDialog(
             .fillMaxWidth(),
           contentAlignment = Alignment.Center
         ) {
+          val isVideo = message.mediaType == MediaType.VIDEO || message.mediaType == MediaType.VIDEO_NOTE
+          val isCircleNote = message.mediaType == MediaType.VIDEO_NOTE
+
           val base64 = if (message.mediaUrl.contains(",")) message.mediaUrl.substringAfter(",") else message.mediaUrl
           val bitmap = remember(base64, message.mediaThumbnail) {
             val src = if (base64.isNotBlank()) base64 else message.mediaThumbnail
@@ -617,38 +658,59 @@ fun FullScreenMediaViewerDialog(
             } else null
           }
 
-          if (message.mediaType == MediaType.VIDEO && isVideoPlaying && message.localUri.isNotBlank()) {
-            AndroidView(
-              factory = { ctx ->
-                VideoView(ctx).apply {
-                  setVideoURI(Uri.parse(message.localUri))
-                  val controller = MediaController(ctx)
-                  controller.setAnchorView(this)
-                  setMediaController(controller)
-                  setOnPreparedListener { mp ->
-                    mp.isLooping = false
-                    start()
-                  }
-                  setOnCompletionListener {
-                    isVideoPlaying = false
-                  }
-                  setOnErrorListener { _, _, _ ->
-                    isVideoPlaying = false
-                    true
-                  }
-                }
+          val mediaModifier = if (isCircleNote) {
+            Modifier
+              .size(310.dp)
+              .clip(CircleShape)
+              .border(3.dp, MaxoCyanPrimary, CircleShape)
+          } else {
+            Modifier
+              .fillMaxWidth()
+              .padding(8.dp)
+          }
+
+          if (isVideo && isVideoPlaying && message.localUri.isNotBlank()) {
+            Box(
+              modifier = if (isCircleNote) {
+                Modifier
+                  .size(310.dp)
+                  .clip(CircleShape)
+                  .border(3.dp, MaxoCyanPrimary, CircleShape)
+              } else {
+                Modifier.fillMaxSize()
               },
-              modifier = Modifier.fillMaxSize()
-            )
+              contentAlignment = Alignment.Center
+            ) {
+              AndroidView(
+                factory = { ctx ->
+                  VideoView(ctx).apply {
+                    setVideoURI(Uri.parse(message.localUri))
+                    val controller = MediaController(ctx)
+                    controller.setAnchorView(this)
+                    setMediaController(controller)
+                    setOnPreparedListener { mp ->
+                      mp.isLooping = isCircleNote // loop video notes smoothly
+                      start()
+                    }
+                    setOnCompletionListener {
+                      if (!isCircleNote) isVideoPlaying = false
+                    }
+                    setOnErrorListener { _, _, _ ->
+                      isVideoPlaying = false
+                      true
+                    }
+                  }
+                },
+                modifier = Modifier.fillMaxSize()
+              )
+            }
           } else {
             if (message.localUri.isNotBlank()) {
               SubcomposeAsyncImage(
                 model = message.localUri,
                 contentDescription = message.text,
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .padding(8.dp),
-                contentScale = ContentScale.Fit,
+                modifier = mediaModifier,
+                contentScale = if (isCircleNote) ContentScale.Crop else ContentScale.Fit,
                 loading = {
                   Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = MaxoCyanPrimary)
@@ -656,7 +718,12 @@ fun FullScreenMediaViewerDialog(
                 },
                 error = {
                   if (bitmap != null) {
-                    Image(bitmap = bitmap, contentDescription = null, modifier = Modifier.fillMaxWidth(), contentScale = ContentScale.Fit)
+                    Image(
+                      bitmap = bitmap,
+                      contentDescription = null,
+                      modifier = mediaModifier,
+                      contentScale = if (isCircleNote) ContentScale.Crop else ContentScale.Fit
+                    )
                   }
                 }
               )
@@ -664,14 +731,12 @@ fun FullScreenMediaViewerDialog(
               Image(
                 bitmap = bitmap,
                 contentDescription = message.text,
-                modifier = Modifier
-                  .fillMaxWidth()
-                  .padding(8.dp),
-                contentScale = ContentScale.Fit
+                modifier = mediaModifier,
+                contentScale = if (isCircleNote) ContentScale.Crop else ContentScale.Fit
               )
             }
 
-            if (message.mediaType == MediaType.VIDEO) {
+            if (isVideo) {
               val needsDownload = message.localUri.isBlank()
               Box(
                 modifier = Modifier

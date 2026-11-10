@@ -1,5 +1,7 @@
 package com.example.ui.components
 
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
@@ -21,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -43,6 +46,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.filled.ArrowDownward
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.CircularProgressIndicator
 
 import androidx.compose.foundation.Image
@@ -204,20 +208,16 @@ fun MaxoUnreadBadge(count: Int, modifier: Modifier = Modifier) {
 
   Box(
     modifier = modifier
-      .clip(RoundedCornerShape(12.dp))
-      .background(
-        Brush.horizontalGradient(
-          colors = listOf(MaxoCyanPrimary, MaxoBlueAccent)
-        )
-      )
-      .padding(horizontal = 7.dp, vertical = 2.dp),
+      .clip(RoundedCornerShape(16.dp))
+      .background(MaterialTheme.colorScheme.primary)
+      .padding(horizontal = 8.dp, vertical = 2.dp),
     contentAlignment = Alignment.Center
   ) {
     Text(
       text = text,
-      color = Color.Black,
+      color = MaterialTheme.colorScheme.onPrimary,
       fontSize = 11.sp,
-      fontWeight = FontWeight.ExtraBold
+      fontWeight = FontWeight.Bold
     )
   }
 }
@@ -274,48 +274,290 @@ fun GroupChatHeader(
       Text(
         text = "$memberCount участников",
         fontSize = 12.sp,
-        color = MaxoCyanPrimary
+        color = MaterialTheme.colorScheme.primary
       )
     }
   }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun CircularVideoNoteBubble(
+  message: ChatMessage,
+  onMediaClick: ((ChatMessage) -> Unit)? = null,
+  onDownloadClick: ((ChatMessage) -> Unit)? = null,
+  onLongClick: ((ChatMessage) -> Unit)? = null,
+  isGroup: Boolean = false,
+  modifier: Modifier = Modifier
+) {
+  val isOutgoing = message.isOutgoing
+  val base64 = if (message.mediaUrl.contains(",")) message.mediaUrl.substringAfter(",") else message.mediaUrl
+  val bitmap = remember(base64, message.mediaThumbnail) {
+    val src = if (base64.isNotBlank()) base64 else message.mediaThumbnail
+    if (src.isNotBlank()) {
+      try {
+        val clean = if (src.contains(",")) src.substringAfter(",") else src
+        val bytes = Base64.decode(clean, Base64.DEFAULT)
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.asImageBitmap()
+      } catch (_: Exception) { null }
+    } else null
+  }
+
+  val isUploading = message.isUploading || (isOutgoing && message.uploadProgress < 1f)
+  val isDownloading = message.isDownloading
+  val needsDownload = !isOutgoing && message.localUri.isBlank()
+
+  val clickModifier = if (onLongClick != null) {
+    Modifier.combinedClickable(
+      onClick = {
+        if (needsDownload) onDownloadClick?.invoke(message)
+        else onMediaClick?.invoke(message)
+      },
+      onLongClick = { onLongClick(message) }
+    )
+  } else {
+    Modifier.clickable {
+      if (needsDownload) onDownloadClick?.invoke(message)
+      else onMediaClick?.invoke(message)
+    }
+  }
+
+  Column(
+    horizontalAlignment = if (isOutgoing) Alignment.End else Alignment.Start,
+    modifier = modifier.padding(vertical = 4.dp)
+  ) {
+    if (isGroup && !isOutgoing && message.senderName.isNotBlank()) {
+      Text(
+        text = message.senderName,
+        color = MaterialTheme.colorScheme.primary,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(bottom = 4.dp, start = 8.dp)
+      )
+    }
+
+    Box(
+      modifier = Modifier
+        .size(210.dp)
+        .clip(CircleShape)
+        .background(Color.Black)
+        .border(3.5.dp, MaterialTheme.colorScheme.primary, CircleShape)
+        .then(clickModifier),
+      contentAlignment = Alignment.Center
+    ) {
+      if (message.localUri.isNotBlank()) {
+        SubcomposeAsyncImage(
+          model = message.localUri,
+          contentDescription = "Кружок",
+          modifier = Modifier.fillMaxSize(),
+          contentScale = ContentScale.Crop,
+          error = {
+            if (bitmap != null) {
+              Image(bitmap = bitmap, contentDescription = null, modifier = Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+            }
+          }
+        )
+      } else if (bitmap != null) {
+        Image(
+          bitmap = bitmap,
+          contentDescription = "Кружок",
+          modifier = Modifier.fillMaxSize(),
+          contentScale = ContentScale.Crop
+        )
+      }
+
+      // Center play/loading indicator
+      Box(
+        modifier = Modifier
+          .size(54.dp)
+          .clip(CircleShape)
+          .background(Color.Black.copy(alpha = 0.55f)),
+        contentAlignment = Alignment.Center
+      ) {
+        when {
+          isUploading -> {
+            CircularProgressIndicator(
+              progress = { message.uploadProgress.coerceIn(0.05f, 1f) },
+              color = MaterialTheme.colorScheme.primary,
+              trackColor = Color.White.copy(alpha = 0.3f),
+              strokeWidth = 3.dp,
+              modifier = Modifier.size(44.dp)
+            )
+            Text(
+              text = "${(message.uploadProgress * 100).toInt()}%",
+              color = Color.White,
+              fontSize = 10.sp,
+              fontWeight = FontWeight.Bold
+            )
+          }
+          isDownloading -> {
+            CircularProgressIndicator(
+              progress = { message.downloadProgress.coerceIn(0.05f, 1f) },
+              color = MaterialTheme.colorScheme.primary,
+              trackColor = Color.White.copy(alpha = 0.3f),
+              strokeWidth = 3.dp,
+              modifier = Modifier.size(44.dp)
+            )
+            Text(
+              text = "${(message.downloadProgress * 100).toInt()}%",
+              color = Color.White,
+              fontSize = 10.sp,
+              fontWeight = FontWeight.Bold
+            )
+          }
+          needsDownload -> {
+            Icon(
+              imageVector = Icons.Default.ArrowDownward,
+              contentDescription = "Скачать кружок",
+              tint = Color.White,
+              modifier = Modifier.size(28.dp)
+            )
+          }
+          else -> {
+            Icon(
+              imageVector = Icons.Default.PlayArrow,
+              contentDescription = "Воспроизвести кружок",
+              tint = Color.White,
+              modifier = Modifier.size(36.dp)
+            )
+          }
+        }
+      }
+
+      // Bottom pill badge: duration, time, and delivery status
+      Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+          .align(Alignment.BottomCenter)
+          .padding(bottom = 10.dp)
+          .clip(RoundedCornerShape(12.dp))
+          .background(Color.Black.copy(alpha = 0.7f))
+          .padding(horizontal = 8.dp, vertical = 3.dp)
+      ) {
+        Icon(
+          imageVector = Icons.Default.Videocam,
+          contentDescription = null,
+          tint = MaterialTheme.colorScheme.primary,
+          modifier = Modifier.size(12.dp)
+        )
+        if (message.mediaDuration > 0) {
+          Spacer(modifier = Modifier.width(4.dp))
+          Text(
+            text = MediaUtils.formatDuration(message.mediaDuration),
+            color = Color.White,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Medium
+          )
+        }
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(
+          text = message.timestamp,
+          color = Color.White.copy(alpha = 0.8f),
+          fontSize = 10.sp
+        )
+        if (isOutgoing) {
+          Spacer(modifier = Modifier.width(4.dp))
+          when (message.status) {
+            MessageStatus.SENDING -> {
+              CircularProgressIndicator(
+                modifier = Modifier.size(10.dp),
+                strokeWidth = 1.5.dp,
+                color = Color.White.copy(alpha = 0.8f)
+              )
+            }
+            MessageStatus.SENT -> {
+              Icon(
+                imageVector = Icons.Default.Done,
+                contentDescription = "Отправлено",
+                tint = Color.White.copy(alpha = 0.8f),
+                modifier = Modifier.size(13.dp)
+              )
+            }
+            MessageStatus.DELIVERED -> {
+              Icon(
+                imageVector = Icons.Default.DoneAll,
+                contentDescription = "Доставлено",
+                tint = Color.White.copy(alpha = 0.8f),
+                modifier = Modifier.size(14.dp)
+              )
+            }
+            MessageStatus.READ -> {
+              Icon(
+                imageVector = Icons.Default.DoneAll,
+                contentDescription = "Прочитано",
+                tint = Color(0xFF64FFDA),
+                modifier = Modifier.size(14.dp)
+              )
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun CustomMessageBubble(
   message: ChatMessage,
   onMediaClick: ((ChatMessage) -> Unit)? = null,
   onDownloadClick: ((ChatMessage) -> Unit)? = null,
+  onLongClick: ((ChatMessage) -> Unit)? = null,
   isGroup: Boolean = false,
   modifier: Modifier = Modifier
 ) {
+  if (message.mediaType == MediaType.VIDEO_NOTE) {
+    CircularVideoNoteBubble(
+      message = message,
+      onMediaClick = onMediaClick,
+      onDownloadClick = onDownloadClick,
+      onLongClick = onLongClick,
+      isGroup = isGroup,
+      modifier = modifier
+    )
+    return
+  }
+
   val isOutgoing = message.isOutgoing
   val hasMedia = message.mediaType != MediaType.NONE
-  val bubbleShape = if (isOutgoing) {
-    RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 4.dp)
+
+  val isLegacy = com.example.ui.theme.LocalAppDesignStyle.current == com.example.data.settings.AppDesignStyle.LEGACY_2014
+  val bubbleShape = if (isLegacy) {
+    RoundedCornerShape(4.dp)
+  } else if (isOutgoing) {
+    RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp, bottomStart = 24.dp, bottomEnd = 6.dp)
   } else {
-    RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 4.dp, bottomEnd = 16.dp)
+    RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp, bottomStart = 6.dp, bottomEnd = 24.dp)
   }
 
-  val bubbleBackground = if (isOutgoing) {
-    Brush.horizontalGradient(
-      colors = listOf(Color(0xFF0077B6), Color(0xFF0096C7))
-    )
+  val bubbleColor = if (isOutgoing) {
+    MaterialTheme.colorScheme.primary
   } else {
-    Brush.horizontalGradient(
-      colors = listOf(
-        MaterialTheme.colorScheme.surfaceVariant,
-        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.95f)
-      )
-    )
+    if (isLegacy) MaterialTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainerHigh
   }
 
-  val textColor = if (isOutgoing) Color.White else MaterialTheme.colorScheme.onSurface
-  val timeColor = if (isOutgoing) Color.White.copy(alpha = 0.75f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f)
+  val textColor = if (isOutgoing) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurface
+  val timeColor = if (isOutgoing) MaterialTheme.colorScheme.onPrimary.copy(alpha = 0.72f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.72f)
+
+  val clickModifier = if (onLongClick != null) {
+    Modifier.combinedClickable(
+      onClick = {
+        if (hasMedia && onMediaClick != null) {
+          onMediaClick(message)
+        }
+      },
+      onLongClick = {
+        onLongClick(message)
+      }
+    )
+  } else Modifier
 
   Box(
     modifier = modifier
+      .then(if (isLegacy) Modifier.shadow(2.dp, bubbleShape) else Modifier)
       .clip(bubbleShape)
-      .background(bubbleBackground)
+      .background(bubbleColor)
+      .then(clickModifier)
       .padding(if (hasMedia) 6.dp else 12.dp)
   ) {
     Column {
@@ -323,7 +565,7 @@ fun CustomMessageBubble(
       if (isGroup && !isOutgoing && message.senderName.isNotBlank()) {
         Text(
           text = message.senderName,
-          color = Color(0xFF00C6FF),
+          color = MaterialTheme.colorScheme.primary,
           fontSize = 12.sp,
           fontWeight = FontWeight.Bold,
           modifier = Modifier.padding(bottom = 4.dp, start = 4.dp)
@@ -542,17 +784,39 @@ fun CustomMessageBubble(
 
           if (isOutgoing) {
             Spacer(modifier = Modifier.width(3.dp))
-            val icon = if (message.status == MessageStatus.READ) {
-              Icons.Default.DoneAll
-            } else {
-              Icons.Default.Done
+            when (message.status) {
+              MessageStatus.SENDING -> {
+                CircularProgressIndicator(
+                  modifier = Modifier.size(10.dp),
+                  strokeWidth = 1.5.dp,
+                  color = timeColor
+                )
+              }
+              MessageStatus.SENT -> {
+                Icon(
+                  imageVector = Icons.Default.Done,
+                  contentDescription = "Отправлено",
+                  tint = timeColor,
+                  modifier = Modifier.size(14.dp)
+                )
+              }
+              MessageStatus.DELIVERED -> {
+                Icon(
+                  imageVector = Icons.Default.DoneAll,
+                  contentDescription = "Доставлено",
+                  tint = timeColor,
+                  modifier = Modifier.size(15.dp)
+                )
+              }
+              MessageStatus.READ -> {
+                Icon(
+                  imageVector = Icons.Default.DoneAll,
+                  contentDescription = "Прочитано",
+                  tint = Color(0xFF64FFDA), // Bright cyan/turquoise read checks
+                  modifier = Modifier.size(15.dp)
+                )
+              }
             }
-            Icon(
-              imageVector = icon,
-              contentDescription = "Статус доставки",
-              tint = if (message.status == MessageStatus.READ) MaxoCyanPrimary else timeColor,
-              modifier = Modifier.size(14.dp)
-            )
           }
         }
       }

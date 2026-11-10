@@ -21,6 +21,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
+import com.example.data.model.CallSession
+import com.example.data.model.CallState
+import com.example.data.model.VoiceParticipant
+import com.example.service.CallForegroundService
+import com.example.util.CallAudioManager
+import android.util.Base64
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import org.json.JSONArray
@@ -37,6 +43,10 @@ interface ChatService {
   val searchResults: StateFlow<List<User>>
   val mediaUploadProgress: StateFlow<Map<String, Float>>
   val mediaDownloadProgress: StateFlow<Map<String, Float>>
+
+  val currentCall: StateFlow<CallSession?>
+  val activeVoiceChannelChatId: StateFlow<String?>
+  val callAudioManager: CallAudioManager
 
   fun updateServerIp(ip: String, port: Int = 8080)
   fun getMessagesFlow(chatId: String): StateFlow<List<ChatMessage>>
@@ -69,16 +79,66 @@ interface ChatService {
   suspend fun createChat(name: String, username: String): ChatDialog
   suspend fun createGroupChat(groupName: String, memberIds: List<String>): ChatDialog
   fun markAsRead(chatId: String)
+  fun setOnlinePresence(isOnline: Boolean)
   suspend fun updateAvatar(type: String, value: String, colorHex: Long? = null): Result<Unit>
-  suspend fun updateProfile(username: String, displayName: String, avatarType: String = "INITIALS", avatarValue: String = ""): Result<Unit>
+  suspend fun updateProfile(
+    username: String,
+    displayName: String,
+    avatarType: String = "INITIALS",
+    avatarValue: String = "",
+    bio: String = "",
+    birthDate: String = ""
+  ): Result<Unit>
+
+  fun startPrivateCall(
+    chatId: String,
+    recipientId: String,
+    recipientName: String,
+    recipientAvatarType: String = "INITIALS",
+    recipientAvatarValue: String = "",
+    recipientAvatarColor: Long = 0xFF00C6FF
+  )
+  fun acceptCall(callId: String)
+  fun rejectCall(callId: String)
+  fun endCall(callId: String)
+  fun toggleCallMute()
+  fun toggleCallSpeaker()
+
+  fun getVoiceParticipantsFlow(chatId: String): StateFlow<List<VoiceParticipant>>
+  fun joinGroupVoice(chatId: String)
+  fun leaveGroupVoice(chatId: String)
+  fun toggleVoiceMute()
+  fun toggleVoiceDeafen()
+  fun updateSpeakingState(chatId: String, isSpeaking: Boolean)
+
+  suspend fun deleteMessage(chatId: String, messageId: String): Boolean
+  suspend fun deleteMessageForMe(chatId: String, messageId: String): Boolean
+  suspend fun deleteChat(chatId: String): Boolean
+  suspend fun addParticipantsToGroup(chatId: String, newMemberIds: List<String>): Boolean
+  suspend fun removeParticipantFromGroup(chatId: String, memberId: String): Boolean
+  suspend fun blockParticipantInGroup(chatId: String, memberId: String): Boolean
+  suspend fun unblockParticipantInGroup(chatId: String, memberId: String): Boolean
+  suspend fun leaveGroup(chatId: String): Boolean
 }
 
 class RealWebSocketChatService(
-  context: Context,
+  private val context: Context,
   private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO)
 ) : ChatService {
 
   private val prefs = context.getSharedPreferences("maxogram_settings", Context.MODE_PRIVATE)
+
+  override val callAudioManager = CallAudioManager(context)
+
+  private val _currentCall = MutableStateFlow<CallSession?>(null)
+  override val currentCall: StateFlow<CallSession?> = _currentCall.asStateFlow()
+
+  private val _activeVoiceChannelChatId = MutableStateFlow<String?>(null)
+  override val activeVoiceChannelChatId: StateFlow<String?> = _activeVoiceChannelChatId.asStateFlow()
+
+  private val voiceParticipantsMap = mutableMapOf<String, MutableStateFlow<List<VoiceParticipant>>>()
+  private var isVoiceMutedState = false
+  private var isVoiceDeafenedState = false
 
   private val _serverIp = MutableStateFlow(prefs.getString("server_ip", "192.168.1.100") ?: "192.168.1.100")
   override val serverIp: StateFlow<String> = _serverIp.asStateFlow()
@@ -119,6 +179,27 @@ class RealWebSocketChatService(
 
   private var webSocket: WebSocket? = null
   private var pendingAuthDeferred: CompletableDeferred<Result<User>>? = null
+
+  init {
+    callAudioManager.onAudioCaptured = { pcm ->
+      val activeCall = _currentCall.value
+      val activeVoice = _activeVoiceChannelChatId.value
+      val myId = _currentUser.value?.id ?: ""
+      if (webSocket != null && _connectionStatus.value == ConnectionStatus.CONNECTED && (activeCall?.state == CallState.CONNECTED || activeVoice != null)) {
+        try {
+          val b64 = Base64.encodeToString(pcm, Base64.NO_WRAP)
+          val json = JSONObject().apply {
+            put("type", "audio_packet")
+            put("senderId", myId)
+            put("callId", activeCall?.id ?: "")
+            put("chatId", activeCall?.chatId ?: activeVoice ?: "")
+            put("data", b64)
+          }
+          webSocket?.send(json.toString())
+        } catch (_: Exception) {}
+      }
+    }
+  }
 
   override fun updateServerIp(ip: String, port: Int) {
     val clean = ip.trim().removeSuffix("/")
@@ -410,6 +491,82 @@ class RealWebSocketChatService(
             }
           }
         }
+
+        "incoming_call" -> {
+          val callId = json.optString("callId")
+          val chatId = json.optString("chatId")
+          val callerId = json.optString("callerId")
+          val callerName = json.optString("callerName", "Собеседник")
+          val callerAvatarType = json.optString("callerAvatarType", "INITIALS")
+          val callerAvatarValue = json.optString("callerAvatarValue", "")
+          val callerAvatarColor = json.optLong("callerAvatarColor", 0xFF00C6FF)
+          _currentCall.value = CallSession(
+            id = callId,
+            chatId = chatId,
+            callerId = callerId,
+            callerName = callerName,
+            callerAvatarType = callerAvatarType,
+            callerAvatarValue = callerAvatarValue,
+            callerAvatarColor = callerAvatarColor,
+            recipientId = _currentUser.value?.id ?: "",
+            recipientName = _currentUser.value?.displayName ?: "",
+            state = CallState.RINGING,
+            startedAtMillis = System.currentTimeMillis(),
+            isIncoming = true
+          )
+          callAudioManager.startIncomingRinging(scope)
+          CallForegroundService.startIncomingCall(context, callId, chatId, callerName)
+        }
+
+        "call_accepted" -> {
+          callAudioManager.playCallConnectedTone()
+          val current = _currentCall.value
+          _currentCall.value = current?.copy(
+            state = CallState.CONNECTED,
+            connectedAtMillis = System.currentTimeMillis()
+          )
+          if (current != null) {
+            CallForegroundService.startActiveCall(context, current.id, current.chatId, current.recipientName)
+          }
+        }
+
+        "call_ended", "call_rejected" -> {
+          callAudioManager.playCallEndedTone()
+          _currentCall.value = _currentCall.value?.copy(state = CallState.ENDED)
+          CallForegroundService.stopCall(context)
+          scope.launch {
+            delay(1200)
+            _currentCall.value = null
+          }
+        }
+
+        "audio_packet" -> {
+          val senderId = json.optString("senderId")
+          val myId = _currentUser.value?.id ?: ""
+          if (senderId != myId) {
+            val audioB64 = json.optString("data")
+            if (audioB64.isNotBlank()) {
+              try {
+                val pcm = Base64.decode(audioB64, Base64.NO_WRAP)
+                callAudioManager.playIncomingAudioPacket(pcm)
+              } catch (_: Exception) {}
+            }
+          }
+        }
+
+        "message_deleted" -> {
+          val chatId = json.optString("chatId")
+          val messageId = json.optString("messageId")
+          messagesMap[chatId]?.let { flow ->
+            flow.value = flow.value.filter { it.id != messageId }
+          }
+        }
+
+        "chat_deleted" -> {
+          val chatId = json.optString("chatId")
+          _chats.value = _chats.value.filter { it.id != chatId }
+          messagesMap.remove(chatId)
+        }
       }
     } catch (e: Exception) {
       Log.e("MaxoGram", "Ошибка парсинга: ${e.message}")
@@ -614,6 +771,251 @@ class RealWebSocketChatService(
     _chats.value = _chats.value.map { dialog ->
       if (dialog.id == chatId) dialog.copy(unreadCount = 0) else dialog
     }
+    messagesMap[chatId]?.let { flow ->
+      flow.value = flow.value.map { msg ->
+        if (!msg.isOutgoing && msg.status != MessageStatus.READ) {
+          msg.copy(status = MessageStatus.READ)
+        } else msg
+      }
+    }
+    if (webSocket != null && _connectionStatus.value == ConnectionStatus.CONNECTED) {
+      val json = JSONObject().apply {
+        put("type", "mark_read")
+        put("chatId", chatId)
+      }
+      webSocket?.send(json.toString())
+    }
+  }
+
+  override fun startPrivateCall(
+    chatId: String,
+    recipientId: String,
+    recipientName: String,
+    recipientAvatarType: String,
+    recipientAvatarValue: String,
+    recipientAvatarColor: Long
+  ) {
+    val myUser = _currentUser.value ?: return
+    val callId = "call_${System.currentTimeMillis()}"
+
+    val session = CallSession(
+      id = callId,
+      chatId = chatId,
+      callerId = myUser.id,
+      callerName = myUser.displayName,
+      callerAvatarType = myUser.avatarType,
+      callerAvatarValue = myUser.avatarValue,
+      callerAvatarColor = myUser.avatarColorHex,
+      recipientId = recipientId,
+      recipientName = recipientName,
+      recipientAvatarType = recipientAvatarType,
+      recipientAvatarValue = recipientAvatarValue,
+      recipientAvatarColor = recipientAvatarColor,
+      isGroup = false,
+      state = CallState.CALLING,
+      startedAtMillis = System.currentTimeMillis(),
+      isIncoming = false
+    )
+    _currentCall.value = session
+    callAudioManager.startRingback(scope)
+    callAudioManager.startMicMonitoring(scope, isMuted = false)
+    CallForegroundService.startActiveCall(context, callId, chatId, recipientName)
+
+    if (webSocket != null && _connectionStatus.value == ConnectionStatus.CONNECTED) {
+      val json = JSONObject().apply {
+        put("type", "call_start")
+        put("callId", callId)
+        put("chatId", chatId)
+        put("recipientId", recipientId)
+        put("callerName", myUser.displayName)
+        put("callerAvatarType", myUser.avatarType)
+        put("callerAvatarValue", myUser.avatarValue)
+        put("callerAvatarColor", myUser.avatarColorHex)
+      }
+      webSocket?.send(json.toString())
+    }
+  }
+
+  override fun acceptCall(callId: String) {
+    val call = _currentCall.value ?: return
+    callAudioManager.stopRingback()
+    callAudioManager.playCallConnectedTone()
+    callAudioManager.startMicMonitoring(scope, isMuted = call.isMuted)
+    CallForegroundService.startActiveCall(context, callId, call.chatId, call.callerName)
+    _currentCall.value = call.copy(
+      state = CallState.CONNECTED,
+      connectedAtMillis = System.currentTimeMillis()
+    )
+    if (webSocket != null && _connectionStatus.value == ConnectionStatus.CONNECTED) {
+      val json = JSONObject().apply {
+        put("type", "call_accept")
+        put("callId", callId)
+        put("chatId", call.chatId)
+        put("callerId", call.callerId)
+      }
+      webSocket?.send(json.toString())
+    }
+  }
+
+  override fun rejectCall(callId: String) {
+    val call = _currentCall.value
+    callAudioManager.stopRingback()
+    callAudioManager.playCallEndedTone()
+    CallForegroundService.stopCall(context)
+    _currentCall.value = call?.copy(state = CallState.REJECTED)
+    scope.launch {
+      delay(1000)
+      _currentCall.value = null
+    }
+    if (webSocket != null && _connectionStatus.value == ConnectionStatus.CONNECTED && call != null) {
+      val json = JSONObject().apply {
+        put("type", "call_reject")
+        put("callId", callId)
+        put("chatId", call.chatId)
+        put("callerId", call.callerId)
+      }
+      webSocket?.send(json.toString())
+    }
+  }
+
+  override fun endCall(callId: String) {
+    val call = _currentCall.value
+    callAudioManager.stopRingback()
+    callAudioManager.playCallEndedTone()
+    CallForegroundService.stopCall(context)
+    _currentCall.value = call?.copy(
+      state = CallState.ENDED,
+      endedAtMillis = System.currentTimeMillis()
+    )
+    scope.launch {
+      delay(1200)
+      _currentCall.value = null
+    }
+    if (webSocket != null && _connectionStatus.value == ConnectionStatus.CONNECTED && call != null) {
+      val json = JSONObject().apply {
+        put("type", "call_end")
+        put("callId", callId)
+        put("chatId", call.chatId)
+        put("recipientId", if (call.isIncoming) call.callerId else call.recipientId)
+      }
+      webSocket?.send(json.toString())
+    }
+  }
+
+  override fun toggleCallMute() {
+    val call = _currentCall.value ?: return
+    val newMute = !call.isMuted
+    callAudioManager.setMicrophoneMute(newMute)
+    if (newMute) {
+      callAudioManager.stopMicMonitoring()
+    } else {
+      callAudioManager.startMicMonitoring(scope, isMuted = false)
+    }
+    _currentCall.value = call.copy(isMuted = newMute)
+  }
+
+  override fun toggleCallSpeaker() {
+    val call = _currentCall.value ?: return
+    val newSpeaker = !call.isSpeakerOn
+    callAudioManager.setSpeakerphoneOn(newSpeaker)
+    _currentCall.value = call.copy(isSpeakerOn = newSpeaker)
+  }
+
+  override fun getVoiceParticipantsFlow(chatId: String): StateFlow<List<VoiceParticipant>> {
+    return voiceParticipantsMap.getOrPut(chatId) {
+      MutableStateFlow(emptyList())
+    }.asStateFlow()
+  }
+
+  override fun joinGroupVoice(chatId: String) {
+    val myUser = _currentUser.value ?: return
+    _activeVoiceChannelChatId.value = chatId
+    callAudioManager.playCallConnectedTone()
+    callAudioManager.startMicMonitoring(scope, isMuted = isVoiceMutedState)
+
+    val flow = voiceParticipantsMap.getOrPut(chatId) { MutableStateFlow(emptyList()) }
+    val participant = VoiceParticipant(
+      userId = myUser.id,
+      displayName = myUser.displayName,
+      avatarType = myUser.avatarType,
+      avatarValue = myUser.avatarValue,
+      avatarColorHex = myUser.avatarColorHex,
+      isMuted = isVoiceMutedState,
+      isDeafened = isVoiceDeafenedState,
+      isSpeaking = false,
+      joinedAtMillis = System.currentTimeMillis()
+    )
+    val existing = flow.value.filter { it.userId != myUser.id }
+    flow.value = existing + participant
+
+    if (webSocket != null && _connectionStatus.value == ConnectionStatus.CONNECTED) {
+      val json = JSONObject().apply {
+        put("type", "voice_join")
+        put("chatId", chatId)
+        put("displayName", myUser.displayName)
+        put("avatarType", myUser.avatarType)
+        put("avatarValue", myUser.avatarValue)
+        put("avatarColorHex", myUser.avatarColorHex)
+      }
+      webSocket?.send(json.toString())
+    }
+  }
+
+  override fun leaveGroupVoice(chatId: String) {
+    if (_activeVoiceChannelChatId.value == chatId) {
+      _activeVoiceChannelChatId.value = null
+      callAudioManager.playCallEndedTone()
+      callAudioManager.stopMicMonitoring()
+    }
+    val myId = _currentUser.value?.id ?: ""
+    val flow = voiceParticipantsMap[chatId]
+    if (flow != null) {
+      flow.value = flow.value.filter { it.userId != myId }
+    }
+    if (webSocket != null && _connectionStatus.value == ConnectionStatus.CONNECTED) {
+      val json = JSONObject().apply {
+        put("type", "voice_leave")
+        put("chatId", chatId)
+      }
+      webSocket?.send(json.toString())
+    }
+  }
+
+  override fun toggleVoiceMute() {
+    isVoiceMutedState = !isVoiceMutedState
+    callAudioManager.setMicrophoneMute(isVoiceMutedState)
+    if (isVoiceMutedState) {
+      callAudioManager.stopMicMonitoring()
+    } else {
+      callAudioManager.startMicMonitoring(scope, isMuted = false)
+    }
+    val activeChatId = _activeVoiceChannelChatId.value ?: return
+    val myId = _currentUser.value?.id ?: return
+    val flow = voiceParticipantsMap[activeChatId] ?: return
+    flow.value = flow.value.map {
+      if (it.userId == myId) it.copy(isMuted = isVoiceMutedState, isSpeaking = false) else it
+    }
+  }
+
+  override fun toggleVoiceDeafen() {
+    isVoiceDeafenedState = !isVoiceDeafenedState
+    if (isVoiceDeafenedState && !isVoiceMutedState) {
+      toggleVoiceMute()
+    }
+    val activeChatId = _activeVoiceChannelChatId.value ?: return
+    val myId = _currentUser.value?.id ?: return
+    val flow = voiceParticipantsMap[activeChatId] ?: return
+    flow.value = flow.value.map {
+      if (it.userId == myId) it.copy(isDeafened = isVoiceDeafenedState) else it
+    }
+  }
+
+  override fun updateSpeakingState(chatId: String, isSpeaking: Boolean) {
+    val myId = _currentUser.value?.id ?: return
+    val flow = voiceParticipantsMap[chatId] ?: return
+    flow.value = flow.value.map {
+      if (it.userId == myId) it.copy(isSpeaking = isSpeaking && !it.isMuted) else it
+    }
   }
 
   override fun logout() {
@@ -646,13 +1048,35 @@ class RealWebSocketChatService(
     return Result.success(Unit)
   }
 
-  override suspend fun updateProfile(username: String, displayName: String, avatarType: String, avatarValue: String): Result<Unit> {
+  override fun setOnlinePresence(isOnline: Boolean) {
+    val current = _currentUser.value ?: return
+    _currentUser.value = current.copy(isOnline = isOnline, lastSeenMillis = System.currentTimeMillis())
+    if (webSocket != null && _connectionStatus.value == ConnectionStatus.CONNECTED) {
+      val json = JSONObject().apply {
+        put("type", "set_presence")
+        put("isOnline", isOnline)
+        put("lastSeenMillis", System.currentTimeMillis())
+      }
+      webSocket?.send(json.toString())
+    }
+  }
+
+  override suspend fun updateProfile(
+    username: String,
+    displayName: String,
+    avatarType: String,
+    avatarValue: String,
+    bio: String,
+    birthDate: String
+  ): Result<Unit> {
     val current = _currentUser.value ?: return Result.failure(Exception("Не выполнен вход"))
     val updated = current.copy(
       username = username.trim().removePrefix("@").lowercase(),
       displayName = displayName.trim(),
       avatarType = avatarType,
-      avatarValue = avatarValue
+      avatarValue = avatarValue,
+      bio = bio.trim(),
+      birthDate = birthDate.trim()
     )
     _currentUser.value = updated
     if (webSocket != null && _connectionStatus.value == ConnectionStatus.CONNECTED) {
@@ -662,6 +1086,8 @@ class RealWebSocketChatService(
         put("displayName", updated.displayName)
         put("avatarType", avatarType)
         put("avatarValue", avatarValue)
+        put("bio", updated.bio)
+        put("birthDate", updated.birthDate)
       }
       webSocket?.send(json.toString())
     }
@@ -749,7 +1175,9 @@ class RealWebSocketChatService(
       displayName = json.optString("displayName", username),
       avatarColorHex = json.optLong("avatarColor", pickColorFor(username)),
       isOnline = json.optBoolean("isOnline", false),
+      lastSeenMillis = json.optLong("lastSeenMillis", 0L),
       bio = json.optString("bio", ""),
+      birthDate = json.optString("birthDate", ""),
       avatarType = json.optString("avatarType", "INITIALS"),
       avatarValue = json.optString("avatarValue", "")
     )
@@ -778,6 +1206,92 @@ class RealWebSocketChatService(
       expiresAtMillis = json.optLong("expiresAtMillis", 0L),
       isPurgedFromServer = json.optBoolean("isPurgedFromServer", false)
     )
+  }
+
+  override suspend fun deleteMessage(chatId: String, messageId: String): Boolean {
+    try {
+      val json = JSONObject().apply {
+        put("type", "delete_message")
+        put("chatId", chatId)
+        put("messageId", messageId)
+      }
+      webSocket?.send(json.toString())
+      messagesMap[chatId]?.let { flow ->
+        flow.value = flow.value.filter { it.id != messageId }
+      }
+      return true
+    } catch (_: Exception) {
+      return false
+    }
+  }
+
+  override suspend fun deleteMessageForMe(chatId: String, messageId: String): Boolean {
+    messagesMap[chatId]?.let { flow ->
+      flow.value = flow.value.filter { it.id != messageId }
+    }
+    return true
+  }
+
+  override suspend fun deleteChat(chatId: String): Boolean {
+    try {
+      val json = JSONObject().apply {
+        put("type", "delete_chat")
+        put("chatId", chatId)
+      }
+      webSocket?.send(json.toString())
+      _chats.value = _chats.value.filter { it.id != chatId }
+      messagesMap.remove(chatId)
+      return true
+    } catch (_: Exception) {
+      return false
+    }
+  }
+
+  override suspend fun addParticipantsToGroup(chatId: String, newMemberIds: List<String>): Boolean {
+    _chats.value = _chats.value.map { chat ->
+      if (chat.id == chatId) {
+        val updated = (chat.memberIds + newMemberIds).distinct()
+        chat.copy(memberIds = updated, participantUsername = "${updated.size} участников")
+      } else chat
+    }
+    return true
+  }
+
+  override suspend fun removeParticipantFromGroup(chatId: String, memberId: String): Boolean {
+    _chats.value = _chats.value.map { chat ->
+      if (chat.id == chatId) {
+        val updated = chat.memberIds.filter { it != memberId }
+        chat.copy(memberIds = updated, participantUsername = "${updated.size} участников")
+      } else chat
+    }
+    return true
+  }
+
+  override suspend fun blockParticipantInGroup(chatId: String, memberId: String): Boolean {
+    _chats.value = _chats.value.map { chat ->
+      if (chat.id == chatId) {
+        val updated = chat.memberIds.filter { it != memberId }
+        val blocked = (chat.blockedMemberIds + memberId).distinct()
+        chat.copy(memberIds = updated, blockedMemberIds = blocked, participantUsername = "${updated.size} участников")
+      } else chat
+    }
+    return true
+  }
+
+  override suspend fun unblockParticipantInGroup(chatId: String, memberId: String): Boolean {
+    _chats.value = _chats.value.map { chat ->
+      if (chat.id == chatId) {
+        chat.copy(blockedMemberIds = chat.blockedMemberIds.filter { it != memberId })
+      } else chat
+    }
+    return true
+  }
+
+  override suspend fun leaveGroup(chatId: String): Boolean {
+    val myId = _currentUser.value?.id ?: ""
+    _chats.value = _chats.value.filter { it.id != chatId }
+    messagesMap.remove(chatId)
+    return true
   }
 
   private fun pickColorFor(text: String): Long {
